@@ -8,7 +8,7 @@ A type-safe web framework for Gleam that brings functional programming elegance 
 
 ## Features
 
-- **Type-Safe Routing** - Express-style routing with compile-time safety and route parameter extraction
+- **Routing** - Laravel-style routing with route parameter extraction
 - **Route Grouping** - Group routes by middleware, path prefix, or name prefix
 - **Middleware System** - Composable middleware at the route and group level
 - **Middleware Groups** - Separate handling for web and API routes with appropriate error responses
