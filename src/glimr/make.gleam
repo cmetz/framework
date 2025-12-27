@@ -61,6 +61,7 @@ pub fn main() {
     ["make:request", name] -> make_request(name)
     ["make:rule", name] -> make_rule(name, file: flags.file)
     ["make:action", name] -> make_action(name)
+    ["setup:sqlite"] -> setup_sqlite()
 
     // Database commands
     ["db:migrate"] -> db_migrate.main()
@@ -125,10 +126,15 @@ fn print_help() {
     "  make:action <name>                    Create an action. Appends _action to the end of the name",
   )
   io.println("")
+  io.println(
+    "  setup:sqlite                          Create SQLite database file and configure .env",
+  )
+  io.println("")
   io.println("  db:migrate                            Run pending migrations")
   io.println(
     "  db:fresh                              Drop database and re-run migrations",
   )
+  io.println("")
   io.println(
     "  gen:db                                Generate migrations and query code from schemas",
   )
@@ -456,6 +462,113 @@ fn make_model(name: String) {
 
       io.println("")
       io.println("Model created successfully!")
+    }
+  }
+}
+
+/// ------------------------------------------------------------
+/// Setup SQLite
+/// ------------------------------------------------------------
+///
+/// Creates the SQLite database directory and file, and updates
+/// the .env file to configure DB_DRIVER and DB_PATH. Creates
+/// the directory src/data/sqlite/ and an empty data.db file.
+///
+fn setup_sqlite() {
+  let db_dir = "src/data/sqlite"
+  let db_path = db_dir <> "/data.db"
+
+  // Create directory
+  case simplifile.create_directory_all(db_dir) {
+    Ok(_) | Error(simplifile.Eexist) -> {
+      // Create empty database file if it doesn't exist
+      case simplifile.is_file(db_path) {
+        Ok(True) -> {
+          io.println("Database file already exists: " <> db_path)
+        }
+        _ -> {
+          case simplifile.write(db_path, "") {
+            Ok(_) -> io.println("Created database file: " <> db_path)
+            Error(_) -> {
+              io.println("Error: Could not create database file")
+            }
+          }
+        }
+      }
+
+      // Update .env file
+      update_env_sqlite(db_path)
+    }
+    Error(_) -> {
+      io.println("Error: Could not create directory " <> db_dir)
+    }
+  }
+}
+
+/// ------------------------------------------------------------
+/// Update Env SQLite
+/// ------------------------------------------------------------
+///
+/// Updates or adds DB_DRIVER and DB_PATH entries in the .env file.
+///
+fn update_env_sqlite(db_path: String) {
+  let env_file = ".env"
+
+  case simplifile.read(env_file) {
+    Ok(content) -> {
+      let new_content =
+        content
+        |> update_or_append_env_line("DB_DRIVER", "sqlite")
+        |> update_or_append_env_line("DB_PATH", db_path)
+
+      case simplifile.write(env_file, new_content) {
+        Ok(_) -> {
+          io.println("Updated .env with DB_DRIVER=sqlite")
+          io.println("Updated .env with DB_PATH=" <> db_path)
+        }
+        Error(_) -> io.println("Error: Could not update .env file")
+      }
+    }
+    Error(_) -> {
+      // Create .env file
+      let content = "DB_DRIVER=sqlite\nDB_PATH=" <> db_path <> "\n"
+      case simplifile.write(env_file, content) {
+        Ok(_) -> {
+          io.println("Created .env with DB_DRIVER=sqlite")
+          io.println("Created .env with DB_PATH=" <> db_path)
+        }
+        Error(_) -> io.println("Error: Could not create .env file")
+      }
+    }
+  }
+}
+
+/// ------------------------------------------------------------
+/// Update Or Append Env Line
+/// ------------------------------------------------------------
+///
+/// Updates an existing env variable or appends it if not present.
+///
+fn update_or_append_env_line(
+  content: String,
+  key: String,
+  value: String,
+) -> String {
+  let prefix = key <> "="
+  case string.contains(content, prefix) {
+    True -> {
+      content
+      |> string.split("\n")
+      |> list.map(fn(line) {
+        case string.starts_with(line, prefix) {
+          True -> key <> "=" <> value
+          False -> line
+        }
+      })
+      |> string.join("\n")
+    }
+    False -> {
+      content <> "\n" <> key <> "=" <> value
     }
   }
 }
