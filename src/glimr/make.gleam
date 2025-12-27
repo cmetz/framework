@@ -444,8 +444,7 @@ fn make_model(name: String) {
       // Create query files
       let query_stubs = ["create", "delete", "find", "list_all", "update"]
       list.each(query_stubs, fn(query_name) {
-        let stub_path =
-          "data/queries/" <> driver <> "/" <> query_name <> ".stub"
+        let stub_path = "data/queries/" <> query_name <> ".stub"
         case read_stub(stub_path) {
           Ok(query_content) -> {
             let query_path = queries_dir <> "/" <> query_name <> ".sql"
@@ -471,7 +470,7 @@ fn make_model(name: String) {
 /// ------------------------------------------------------------
 ///
 /// Creates the SQLite database directory and file, and updates
-/// the .env file to configure DB_DRIVER and DB_PATH. Creates
+/// the .env file to configure DB_DRIVER and DB_DATABASE. Creates
 /// the directory src/data/sqlite/ and an empty data.db file.
 ///
 fn setup_sqlite() {
@@ -509,33 +508,43 @@ fn setup_sqlite() {
 /// Update Env SQLite
 /// ------------------------------------------------------------
 ///
-/// Updates or adds DB_DRIVER and DB_PATH entries in the .env file.
+/// Updates DB_DRIVER to sqlite and DB_DATABASE if present.
+/// Comments out PostgreSQL-specific variables.
 ///
 fn update_env_sqlite(db_path: String) {
   let env_file = ".env"
+  let postgres_vars = [
+    "DB_URL",
+    "DB_HOST",
+    "DB_PORT",
+    "DB_USERNAME",
+    "DB_PASSWORD",
+  ]
 
   case simplifile.read(env_file) {
     Ok(content) -> {
       let new_content =
         content
-        |> update_or_append_env_line("DB_DRIVER", "sqlite")
-        |> update_or_append_env_line("DB_PATH", db_path)
+        |> update_env_var("DB_DRIVER", "sqlite")
+        |> update_env_var("DB_DATABASE", db_path)
+        |> comment_out_env_vars(postgres_vars)
 
       case simplifile.write(env_file, new_content) {
         Ok(_) -> {
           io.println("Updated .env with DB_DRIVER=sqlite")
-          io.println("Updated .env with DB_PATH=" <> db_path)
+          io.println("Updated .env with DB_DATABASE=" <> db_path)
         }
         Error(_) -> io.println("Error: Could not update .env file")
       }
     }
     Error(_) -> {
       // Create .env file
-      let content = "DB_DRIVER=sqlite\nDB_PATH=" <> db_path <> "\n"
+      let content =
+        "DB_DRIVER=sqlite\nDB_DATABASE=" <> db_path <> "\nDB_POOL_SIZE=15\n"
       case simplifile.write(env_file, content) {
         Ok(_) -> {
           io.println("Created .env with DB_DRIVER=sqlite")
-          io.println("Created .env with DB_PATH=" <> db_path)
+          io.println("Created .env with DB_DATABASE=" <> db_path)
         }
         Error(_) -> io.println("Error: Could not create .env file")
       }
@@ -544,33 +553,60 @@ fn update_env_sqlite(db_path: String) {
 }
 
 /// ------------------------------------------------------------
-/// Update Or Append Env Line
+/// Update Env Var
 /// ------------------------------------------------------------
 ///
-/// Updates an existing env variable or appends it if not present.
+/// Updates an existing environment variable. Uncomments if
+/// commented out. Does nothing if the variable doesn't exist.
 ///
-fn update_or_append_env_line(
-  content: String,
-  key: String,
-  value: String,
-) -> String {
+fn update_env_var(content: String, key: String, value: String) -> String {
   let prefix = key <> "="
-  case string.contains(content, prefix) {
-    True -> {
-      content
-      |> string.split("\n")
-      |> list.map(fn(line) {
-        case string.starts_with(line, prefix) {
+  let commented_prefix = "# " <> key <> "="
+  content
+  |> string.split("\n")
+  |> list.map(fn(line) {
+    case string.starts_with(line, prefix) {
+      True -> key <> "=" <> value
+      False -> {
+        case string.starts_with(line, commented_prefix) {
           True -> key <> "=" <> value
           False -> line
         }
-      })
-      |> string.join("\n")
+      }
     }
-    False -> {
-      content <> "\n" <> key <> "=" <> value
+  })
+  |> string.join("\n")
+}
+
+/// ------------------------------------------------------------
+/// Comment Out Env Vars
+/// ------------------------------------------------------------
+///
+/// Comments out the specified environment variables if they
+/// exist and aren't already commented out.
+///
+fn comment_out_env_vars(content: String, vars: List(String)) -> String {
+  list.fold(vars, content, fn(acc, var) { comment_out_env_var(acc, var) })
+}
+
+/// ------------------------------------------------------------
+/// Comment Out Env Var
+/// ------------------------------------------------------------
+///
+/// Comments out a single environment variable if it exists and
+/// isn't already commented out.
+///
+fn comment_out_env_var(content: String, var: String) -> String {
+  let prefix = var <> "="
+  content
+  |> string.split("\n")
+  |> list.map(fn(line) {
+    case string.starts_with(line, prefix) {
+      True -> "# " <> line
+      False -> line
     }
-  }
+  })
+  |> string.join("\n")
 }
 
 /// ------------------------------------------------------------

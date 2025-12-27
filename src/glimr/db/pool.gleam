@@ -10,11 +10,12 @@
 
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process
+import gleam/option
 import gleam/otp/actor
 import gleam/string
 import glimr/db/connection.{
   type Config, type Connection, type DbError, ConnectionError, PostgresConfig,
-  SqliteConfig,
+  PostgresParamsConfig, SqliteConfig,
 }
 import pog
 import sqlight
@@ -56,7 +57,16 @@ pub opaque type Pool {
 ///
 pub fn start(config: Config) -> Result(Pool, DbError) {
   case config {
-    PostgresConfig(url, pool_size) -> start_postgres_pool(url, pool_size)
+    PostgresConfig(url, pool_size) -> start_postgres_pool_url(url, pool_size)
+    PostgresParamsConfig(host, port, database, username, password, pool_size) ->
+      start_postgres_pool_params(
+        host,
+        port,
+        database,
+        username,
+        password,
+        pool_size,
+      )
     SqliteConfig(path, pool_size) -> start_sqlite_pool(path, pool_size)
   }
 }
@@ -197,32 +207,77 @@ pub fn checkin(pool: Pool, conn: Connection) -> Nil {
 // ------------------------------------------------------------- Private Functions
 
 /// ------------------------------------------------------------
-/// Start PostgreSQL Pool
+/// Start PostgreSQL Pool (URL)
 /// ------------------------------------------------------------
 ///
-/// Creates a PostgreSQL connection pool using pog's built-in
-/// pooling. Generates a unique pool name and configures the
-/// pool size.
+/// Creates a PostgreSQL connection pool from a URL using pog's
+/// built-in pooling. Generates a unique pool name and configures
+/// the pool size.
 ///
-fn start_postgres_pool(url: String, pool_size: Int) -> Result(Pool, DbError) {
-  // Create a unique name for this pool
+fn start_postgres_pool_url(url: String, pool_size: Int) -> Result(Pool, DbError) {
   let pool_name = process.new_name(prefix: "glimr_db_pool")
 
   case pog.url_config(pool_name, url) {
     Ok(config) -> {
       let config = pog.pool_size(config, pool_size)
-      case pog.start(config) {
-        Ok(actor.Started(_, _conn)) ->
-          Ok(PostgresPool(name_to_dynamic(pool_name)))
-        Error(actor.InitFailed(_)) ->
-          Error(ConnectionError("Failed to start Postgres pool"))
-        Error(actor.InitTimeout) ->
-          Error(ConnectionError("Postgres pool initialization timed out"))
-        Error(actor.InitExited(_)) ->
-          Error(ConnectionError("Postgres pool exited during initialization"))
-      }
+      start_pog_pool(pool_name, config)
     }
     Error(Nil) -> Error(ConnectionError("Invalid Postgres connection URL"))
+  }
+}
+
+/// ------------------------------------------------------------
+/// Start PostgreSQL Pool (Params)
+/// ------------------------------------------------------------
+///
+/// Creates a PostgreSQL connection pool from individual parameters
+/// using pog's builder pattern. This avoids URL parsing and handles
+/// special characters in passwords correctly.
+///
+fn start_postgres_pool_params(
+  host: String,
+  port: Int,
+  database: String,
+  username: String,
+  password: option.Option(String),
+  pool_size: Int,
+) -> Result(Pool, DbError) {
+  let pool_name = process.new_name(prefix: "glimr_db_pool")
+
+  let config =
+    pog.default_config(pool_name)
+    |> pog.host(host)
+    |> pog.port(port)
+    |> pog.database(database)
+    |> pog.user(username)
+    |> pog.pool_size(pool_size)
+
+  let config = case password {
+    option.Some(pw) -> pog.password(config, option.Some(pw))
+    option.None -> config
+  }
+
+  start_pog_pool(pool_name, config)
+}
+
+/// ------------------------------------------------------------
+/// Start Pog Pool
+/// ------------------------------------------------------------
+///
+/// Shared helper to start a pog pool from a configured config.
+///
+fn start_pog_pool(
+  pool_name: process.Name(pog.Message),
+  config: pog.Config,
+) -> Result(Pool, DbError) {
+  case pog.start(config) {
+    Ok(actor.Started(_, _conn)) -> Ok(PostgresPool(name_to_dynamic(pool_name)))
+    Error(actor.InitFailed(_)) ->
+      Error(ConnectionError("Failed to start Postgres pool"))
+    Error(actor.InitTimeout) ->
+      Error(ConnectionError("Postgres pool initialization timed out"))
+    Error(actor.InitExited(_)) ->
+      Error(ConnectionError("Postgres pool exited during initialization"))
   }
 }
 

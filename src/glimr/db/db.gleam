@@ -8,6 +8,7 @@
 
 import dot_env/env
 import gleam/erlang/process
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import glimr/db/connection.{
@@ -23,26 +24,74 @@ import glimr/db/query
 /// ------------------------------------------------------------
 ///
 /// Builds database configuration from environment variables.
-/// Reads DB_DRIVER (postgres or sqlite), DB_URL or DB_PATH,
-/// and DB_POOL_SIZE from the environment.
-/// 
+/// Reads DB_DRIVER and DB_POOL_SIZE from the environment.
+///
+/// For PostgreSQL, uses DB_URL if set, otherwise uses individual
+/// parameters: DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME,
+/// DB_PASSWORD.
+///
+/// For SQLite, DB_DATABASE is preferred but DB_PATH is supported
+/// for backward compatibility.
+///
 pub fn load_config() -> connection.Config {
   let assert Ok(driver) = env.get_string("DB_DRIVER")
   let pool_size = env.get_int("DB_POOL_SIZE") |> result.unwrap(15)
 
   case driver {
-    "postgres" -> {
-      let assert Ok(url) = env.get_string("DB_URL")
-      connection.postgres_config(url, pool_size: pool_size)
-    }
-
-    "sqlite" -> {
-      let assert Ok(path) = env.get_string("DB_PATH")
-      connection.sqlite_config(path, pool_size: pool_size)
-    }
-
+    "postgres" -> load_postgres_config(pool_size)
+    "sqlite" -> load_sqlite_config(pool_size)
     _ -> panic as "Please specify a valid DB_DRIVER in your .env file."
   }
+}
+
+/// ------------------------------------------------------------
+/// Load Postgres Config
+/// ------------------------------------------------------------
+///
+/// Loads PostgreSQL configuration from environment variables.
+/// Tries DB_URL first, falls back to individual parameters.
+///
+fn load_postgres_config(pool_size: Int) -> connection.Config {
+  case env.get_string("DB_URL") {
+    Ok(url) -> connection.postgres_config(url, pool_size: pool_size)
+    Error(_) -> {
+      // Use individual parameters
+      let assert Ok(host) = env.get_string("DB_HOST")
+      let port = env.get_int("DB_PORT") |> result.unwrap(5432)
+      let assert Ok(database) = env.get_string("DB_DATABASE")
+      let assert Ok(username) = env.get_string("DB_USERNAME")
+      let password = case env.get_string("DB_PASSWORD") {
+        Ok(pw) -> Some(pw)
+        Error(_) -> None
+      }
+      connection.postgres_params_config(
+        host: host,
+        port: port,
+        database: database,
+        username: username,
+        password: password,
+        pool_size: pool_size,
+      )
+    }
+  }
+}
+
+/// ------------------------------------------------------------
+/// Load SQLite Config
+/// ------------------------------------------------------------
+///
+/// Loads SQLite configuration from environment variables.
+/// Tries DB_DATABASE first, falls back to DB_PATH.
+///
+fn load_sqlite_config(pool_size: Int) -> connection.Config {
+  let path = case env.get_string("DB_DATABASE") {
+    Ok(p) -> p
+    Error(_) -> {
+      let assert Ok(p) = env.get_string("DB_PATH")
+      p
+    }
+  }
+  connection.sqlite_config(path, pool_size: pool_size)
 }
 
 /// ------------------------------------------------------------

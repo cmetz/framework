@@ -33,11 +33,20 @@ pub type Driver {
 /// Config Type
 /// ------------------------------------------------------------
 ///
-/// Configuration for establishing a database connection.
-/// Use `postgres_config` or `sqlite_config` to create instances.
+/// Configuration for establishing a database connection. Use 
+/// `postgres_config`, `postgres_params_config`, or
+/// `sqlite_config` to create instances.
 ///
 pub type Config {
   PostgresConfig(url: String, pool_size: Int)
+  PostgresParamsConfig(
+    host: String,
+    port: Int,
+    database: String,
+    username: String,
+    password: Option(String),
+    pool_size: Int,
+  )
   SqliteConfig(path: String, pool_size: Int)
 }
 
@@ -127,6 +136,48 @@ pub opaque type Value {
 ///
 pub fn postgres_config(url: String, pool_size pool_size: Int) -> Config {
   PostgresConfig(url: url, pool_size: pool_size)
+}
+
+/// ------------------------------------------------------------
+/// Create Postgres Params Config
+/// ------------------------------------------------------------
+///
+/// Creates a PostgreSQL configuration from individual 
+/// parameters. This is an alternative to `postgres_config` when 
+/// you have separate host, port, database, username, and 
+/// password values.
+///
+/// ------------------------------------------------------------
+///
+/// *Example:*
+///
+/// ```gleam
+/// let config = postgres_params_config(
+///   host: "localhost",
+///   port: 5432,
+///   database: "myapp",
+///   username: "postgres",
+///   password: Some("secret"),
+///   pool_size: 10,
+/// )
+/// ```
+///
+pub fn postgres_params_config(
+  host host: String,
+  port port: Int,
+  database database: String,
+  username username: String,
+  password password: Option(String),
+  pool_size pool_size: Int,
+) -> Config {
+  PostgresParamsConfig(
+    host: host,
+    port: port,
+    database: database,
+    username: username,
+    password: password,
+    pool_size: pool_size,
+  )
 }
 
 /// ------------------------------------------------------------

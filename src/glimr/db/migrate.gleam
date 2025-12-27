@@ -255,7 +255,8 @@ pub fn run_fresh() {
       io.println("Dropping database: " <> path)
       simplifile.delete(path)
     }
-    connection.PostgresConfig(_, _) -> {
+    connection.PostgresConfig(_, _)
+    | connection.PostgresParamsConfig(_, _, _, _, _, _) -> {
       io.println("Dropping all tables...")
       case pool.start(config) {
         Ok(db_pool) -> {
