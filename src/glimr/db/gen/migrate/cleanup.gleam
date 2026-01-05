@@ -1,12 +1,9 @@
-//// ------------------------------------------------------------
 //// Migration Cleanup
-//// ------------------------------------------------------------
 ////
 //// Handles automatic cleanup of rename_from modifiers from
 //// schema files after a migration is generated. This ensures
 //// that rename_from directives are only used once and don't
 //// accumulate in schema files.
-////
 
 import gleam/io
 import gleam/list
@@ -16,10 +13,6 @@ import simplifile
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Clean Rename From Modifiers
-/// ------------------------------------------------------------
-///
 /// Remove rename_from modifiers from schema files after
 /// migration is generated.
 ///
@@ -81,10 +74,6 @@ pub fn clean_rename_from_modifiers(models_path: String) -> Nil {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Remove Rename From Calls
-/// ------------------------------------------------------------
-///
 /// Remove |> rename_from("...") patterns from schema content.
 ///
 fn remove_rename_from_calls(content: String) -> String {
@@ -108,10 +97,6 @@ fn remove_rename_from_calls(content: String) -> String {
   clean_rename_from_import(cleaned)
 }
 
-/// ------------------------------------------------------------
-/// Remove Rename From From Line
-/// ------------------------------------------------------------
-///
 /// Remove rename_from call from a single line of code.
 ///
 fn remove_rename_from_from_line(line: String) -> String {
@@ -128,10 +113,6 @@ fn remove_rename_from_from_line(line: String) -> String {
   result
 }
 
-/// ------------------------------------------------------------
-/// Remove Rename Pattern
-/// ------------------------------------------------------------
-///
 /// Remove the rename_from pattern and handle spacing.
 ///
 fn remove_rename_pattern(before: String, after: String) -> String {
@@ -151,10 +132,6 @@ fn remove_rename_pattern(before: String, after: String) -> String {
   }
 }
 
-/// ------------------------------------------------------------
-/// Find Closing Paren
-/// ------------------------------------------------------------
-///
 /// Find everything after the closing paren of rename_from(...).
 ///
 fn find_closing_paren(s: String) -> Result(String, Nil) {
@@ -164,10 +141,6 @@ fn find_closing_paren(s: String) -> Result(String, Nil) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Clean Rename From Import
-/// ------------------------------------------------------------
-///
 /// Remove rename_from from imports if no longer used in the
 /// file.
 ///

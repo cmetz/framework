@@ -1,22 +1,16 @@
-//// ------------------------------------------------------------
 //// SQL Normalization
-//// ------------------------------------------------------------
 ////
 //// Functions for normalizing SQL queries by stripping comments
-//// and collapsing whitespace.
-////
+//// and collapsing whitespace ensuring valid SQL is parsed.
 
 import gleam/list
 import gleam/string
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Normalize SQL
-/// ------------------------------------------------------------
-///
 /// Normalize a SQL query by stripping comments, converting
-/// whitespace to single spaces, and trimming.
+/// whitespace to single spaces, and trimming unneeded
+/// whitespace from the SQL code.
 ///
 pub fn normalize(sql: String) -> String {
   sql
@@ -29,12 +23,9 @@ pub fn normalize(sql: String) -> String {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Strip Comments
-/// ------------------------------------------------------------
-///
-/// Strip SQL comments from the query. Handles both -- single-
-/// line comments and /* */ multi-line block comments.
+/// Strip SQL comments from the query. This handles both single
+/// line comments "-- like this" and multi-line block comments
+/// /* like this */ from being parsed as valid SQL.
 ///
 fn strip_comments(sql: String) -> String {
   sql
@@ -42,11 +33,9 @@ fn strip_comments(sql: String) -> String {
   |> strip_line_comments()
 }
 
-/// ------------------------------------------------------------
-/// Strip Block Comments
-/// ------------------------------------------------------------
-///
-/// Recursively strip /* */ block comments from SQL.
+/// Recursively strip multi-line comments from SQL which would
+/// be /* */ block comments specifically. This ensures
+/// block comments are not parsed as valid SQL.
 ///
 fn strip_block_comments(sql: String) -> String {
   case string.split_once(sql, "/*") {
@@ -60,11 +49,8 @@ fn strip_block_comments(sql: String) -> String {
   }
 }
 
-/// ------------------------------------------------------------
-/// Strip Line Comments
-/// ------------------------------------------------------------
-///
-/// Strip -- line comments (everything from -- to end of line).
+/// Strip single line comments "-- like these". This works by 
+/// stripping everything from -- to end of line.
 ///
 fn strip_line_comments(sql: String) -> String {
   let lines = string.split(sql, "\n")
@@ -78,12 +64,8 @@ fn strip_line_comments(sql: String) -> String {
   |> string.join("\n")
 }
 
-/// ------------------------------------------------------------
-/// Collapse Spaces
-/// ------------------------------------------------------------
-///
 /// Recursively collapse multiple consecutive spaces into single
-/// spaces.
+/// spaces cleaning up the SQL code.
 ///
 fn collapse_spaces(sql: String) -> String {
   case string.contains(sql, "  ") {

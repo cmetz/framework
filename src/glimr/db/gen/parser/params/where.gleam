@@ -1,11 +1,8 @@
-//// ------------------------------------------------------------
 //// WHERE Parameter Extraction
-//// ------------------------------------------------------------
 ////
 //// Functions for extracting parameter-to-column mappings from
 //// WHERE clauses. Handles comparison operators and delegates
 //// BETWEEN patterns to the between module.
-////
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -13,12 +10,8 @@ import gleam/string
 import glimr/db/gen/parser/params/between
 import glimr/db/gen/parser/util
 
-// ------------------------------------------------------------- Constants
+// ------------------------------------------------------------- Private Constants
 
-/// ------------------------------------------------------------
-/// Keyword Operators
-/// ------------------------------------------------------------
-///
 /// SQL keyword operators to strip when extracting column names.
 /// Each entry is (suffix, length) for efficient removal.
 ///
@@ -30,20 +23,12 @@ const keyword_operators = [
   #(" BETWEEN", 8),
 ]
 
-/// ------------------------------------------------------------
-/// Symbol Operators
-/// ------------------------------------------------------------
-///
 /// Symbol operators to strip when extracting column names.
 ///
 const symbol_operators = ["=", "!", ">", "<"]
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Extract Where Param Columns
-/// ------------------------------------------------------------
-///
 /// Extract parameter-to-column mappings from WHERE clause.
 /// Handles BETWEEN patterns specially for more accurate naming.
 ///
@@ -67,10 +52,6 @@ pub fn extract(sql: String) -> List(#(Int, String)) {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Merge Param Columns
-/// ------------------------------------------------------------
-///
 /// Merge two param column lists, preferring the first list
 /// (primary) when the same parameter appears in both.
 ///
@@ -84,10 +65,6 @@ fn merge_param_columns(
   list.append(primary, filtered_secondary)
 }
 
-/// ------------------------------------------------------------
-/// Parse Conditions
-/// ------------------------------------------------------------
-///
 /// Recursively parse WHERE clause conditions to extract
 /// parameter-to-column mappings from comparisons.
 ///
@@ -104,10 +81,6 @@ fn parse_conditions(
   }
 }
 
-/// ------------------------------------------------------------
-/// Find Param Column Pair
-/// ------------------------------------------------------------
-///
 /// Find the next parameter and its associated column in the
 /// WHERE clause. Returns the param number, column name, and
 /// remaining string for continued parsing.
@@ -130,10 +103,6 @@ fn find_param_column_pair(s: String) -> Option(#(Int, String, String)) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Find Column For Param
-/// ------------------------------------------------------------
-///
 /// Try to find the column associated with a parameter, checking
 /// both before (column = $1) and after ($1 = column) positions.
 ///
@@ -147,10 +116,6 @@ fn find_column_for_param(
   }
 }
 
-/// ------------------------------------------------------------
-/// Find Column Before Param
-/// ------------------------------------------------------------
-///
 /// Look for a column name before the parameter in patterns
 /// like "column = $1". Strips operators and filters keywords.
 ///
@@ -173,10 +138,6 @@ fn find_column_before_param(s: String) -> Option(String) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Remove Trailing Operator
-/// ------------------------------------------------------------
-///
 /// Recursively remove trailing comparison operators from a
 /// string. Handles both keyword operators (LIKE, IN) and
 /// symbol operators (=, !, >, <).
@@ -196,10 +157,6 @@ fn remove_trailing_operator(s: String) -> String {
   }
 }
 
-/// ------------------------------------------------------------
-/// Try Remove Keyword Operator
-/// ------------------------------------------------------------
-///
 /// Try to remove a keyword operator (LIKE, IN, etc.) from the
 /// end of a string. Returns the shortened string if found.
 ///
@@ -218,10 +175,6 @@ fn try_remove_keyword_operator(
   |> option.from_result()
 }
 
-/// ------------------------------------------------------------
-/// Try Remove Symbol Operator
-/// ------------------------------------------------------------
-///
 /// Try to remove a symbol operator (=, !, >, <) from the end
 /// of a string. Returns the shortened string if found.
 ///
@@ -238,10 +191,6 @@ fn try_remove_symbol_operator(
   |> option.from_result()
 }
 
-/// ------------------------------------------------------------
-/// Find Column After Param
-/// ------------------------------------------------------------
-///
 /// Look for a column name after the parameter in patterns
 /// like "$1 = column". Returns the column and remaining string.
 ///

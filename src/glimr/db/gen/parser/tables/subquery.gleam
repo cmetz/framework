@@ -1,20 +1,13 @@
-//// ------------------------------------------------------------
 //// Subquery Helpers
-//// ------------------------------------------------------------
 ////
 //// Utilities for extracting content from subqueries, primarily
 //// handling balanced parentheses extraction.
-////
 
 import gleam/option.{type Option, None, Some}
 import gleam/string
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Extract Parenthesized Content
-/// ------------------------------------------------------------
-///
 /// Extract content from balanced parentheses, handling nested
 /// parentheses correctly. Returns the content inside the parens
 /// without the surrounding parentheses.
@@ -28,10 +21,6 @@ pub fn extract_parenthesized_content(sql: String) -> Option(String) {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Do Extract Parenthesized Content
-/// ------------------------------------------------------------
-///
 /// Recursive helper that tracks parenthesis depth. Starts at
 /// depth 1 (after the opening paren) and returns when depth
 /// reaches 0.

@@ -1,25 +1,17 @@
-//// ------------------------------------------------------------
 //// Unix Timestamp Utils
-//// ------------------------------------------------------------
 ////
 //// Convenience functions for working with Unix timestamps.
-//// Returns the current time as integer seconds or nanoseconds
-//// since the Unix epoch (January 1, 1970). Useful for storing
-//// timestamps in database columns defined with unix_timestamp().
-////
+//// Returns the current time as integer seconds or nanoseconds 
+//// since the Unix epoch (January 1, 1970). Useful for storing 
+//// timestamps in database columns with unix_timestamp().
 
 import gleam/time/timestamp
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Now (Seconds)
-/// ------------------------------------------------------------
-///
 /// Returns the current Unix timestamp in seconds since epoch.
-/// Use this for storing timestamps in unix_timestamp() columns.
-///
-/// ------------------------------------------------------------
+/// Use this for storing timestamps in database columns
+/// with the unix_timestamp() schema type.
 ///
 /// *Example:*
 ///
@@ -30,21 +22,16 @@ import gleam/time/timestamp
 ///
 pub fn now() -> Int {
   let #(seconds, _) = {
-    timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds()
+    timestamp.system_time()
+    |> timestamp.to_unix_seconds_and_nanoseconds()
   }
 
   seconds
 }
 
-/// ------------------------------------------------------------
-/// Now (Nanoseconds)
-/// ------------------------------------------------------------
-///
 /// Returns the nanosecond component of the current timestamp.
 /// Useful when you need sub-second precision in addition to
 /// the seconds from now().
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 ///
@@ -55,7 +42,8 @@ pub fn now() -> Int {
 ///
 pub fn now_nano() -> Int {
   let #(_, nano) = {
-    timestamp.system_time() |> timestamp.to_unix_seconds_and_nanoseconds()
+    timestamp.system_time()
+    |> timestamp.to_unix_seconds_and_nanoseconds()
   }
 
   nano

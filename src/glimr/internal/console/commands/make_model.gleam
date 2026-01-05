@@ -1,0 +1,77 @@
+import gleam/list
+import gleam/string
+import glimr/console/command.{type Command, type ParsedArgs, Argument}
+import glimr/console/console
+import glimr/db/pool.{type Pool}
+import glimr/filesystem/filesystem
+import glimr/utils/string as glimr_string
+
+/// The name of the console command.
+const name = "make:model"
+
+/// The console command description.
+const description = "Create a new model"
+
+/// Define the Command and it's properties.
+///
+pub fn command() -> Command {
+  command.new()
+  |> command.name(name)
+  |> command.description(description)
+  |> command.args([
+    Argument(name: "name", description: "The name of the model"),
+  ])
+  |> command.handler_with_db(run)
+}
+
+/// Execute the console command.
+///
+fn run(args: ParsedArgs, _pool: Pool) -> Nil {
+  // We use handler_with_db (even though we don't need the pool) 
+  // because run_with_db validates that the --database connection 
+  // exists behind the scenes.
+
+  let model_name_input = command.get_arg(args, "name")
+  let connection = command.get_option(args, "database")
+
+  let model_name = string.lowercase(model_name_input)
+  let table_name = glimr_string.pluralize(model_name)
+  let model_dir = "src/data/" <> connection <> "/models/" <> model_name
+  let queries_dir = model_dir <> "/queries"
+
+  let assert Ok(dir_exists) = filesystem.file_exists(model_dir)
+
+  case dir_exists {
+    True -> {
+      console.output()
+      |> console.line_error("Error: Model already exists!")
+      |> console.line("[" <> model_dir <> "]")
+      |> console.print()
+    }
+    False -> {
+      let schema_path = model_dir <> "/" <> model_name <> "_schema.gleam"
+      let assert Ok(_) =
+        filesystem.write_from_stub_with_variables(
+          stub_path: "data/schema.stub",
+          dest_path: schema_path,
+          variables: [#("table_name", table_name)],
+        )
+
+      let query_stubs = ["create", "delete", "find", "list_all", "update"]
+      list.each(query_stubs, fn(query_name) {
+        let query_path = queries_dir <> "/" <> query_name <> ".sql"
+        let assert Ok(_) =
+          filesystem.write_from_stub_with_variables(
+            stub_path: "data/queries/" <> query_name <> ".stub",
+            dest_path: query_path,
+            variables: [#("table_name", table_name)],
+          )
+      })
+
+      console.output()
+      |> console.line_success("Model created successfully!")
+      |> console.line("[" <> model_dir <> "]")
+      |> console.print()
+    }
+  }
+}

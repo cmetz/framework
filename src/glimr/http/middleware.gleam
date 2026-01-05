@@ -1,22 +1,15 @@
-//// ------------------------------------------------------------
 //// Middleware Helper
-//// ------------------------------------------------------------
 ////
-//// Utility for applying multiple middleware functions in sequence.
-//// Middleware are applied in order, with each having access to the
-//// request and context, and ability to call the next middleware
-//// in the chain.
-////
+//// Utility for applying multiple middleware functions in 
+//// sequence. Middleware are applied in order, with each having 
+//// access to the request and context, and ability to call the 
+//// next middleware in the chain.
 
 import glimr/http/kernel.{type Middleware, type Next}
 import wisp.{type Request, type Response}
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Apply Middleware
-/// ------------------------------------------------------------
-///
 /// Applies a list of middleware functions in sequence to a
 /// request. Each middleware receives the request, context, and
 /// a 'next' function to continue the chain. Middleware can
@@ -29,8 +22,6 @@ import wisp.{type Request, type Response}
 /// This is useful when you want to apply multiple middleware to
 /// a specific route without adding them to the route group's
 /// global middleware stack.
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 ///
@@ -54,10 +45,6 @@ pub fn apply(
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Apply Middleware Recursively
-/// ------------------------------------------------------------
-///
 /// Recursively applies middleware from the list. When the list
 /// is empty, calls the final handler with the (potentially
 /// modified) request and context. Otherwise, calls the first

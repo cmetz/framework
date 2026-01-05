@@ -1,6 +1,4 @@
-//// ------------------------------------------------------------
 //// Schema Parser
-//// ------------------------------------------------------------
 ////
 //// Parses schema.gleam files to extract table definitions.
 //// This parser handles the list-based schema definition format:
@@ -12,7 +10,6 @@
 ////   boolean("is_active") |> default(DefaultBool(True)),
 ////   timestamps(),
 //// ])
-////
 
 import gleam/float
 import gleam/int
@@ -23,20 +20,12 @@ import gleam/string
 
 // ------------------------------------------------------------- Public Types
 
-/// ------------------------------------------------------------
-/// Table Type
-/// ------------------------------------------------------------
-///
 /// Represents a database table with a name and list of columns.
 ///
 pub type Table {
   Table(name: String, columns: List(Column))
 }
 
-/// ------------------------------------------------------------
-/// Column Type
-/// ------------------------------------------------------------
-///
 /// Represents a database column with its name, type, 
 /// nullability, default value, and optional rename tracking.
 ///
@@ -50,10 +39,6 @@ pub type Column {
   )
 }
 
-/// ------------------------------------------------------------
-/// Default Value Type
-/// ------------------------------------------------------------
-///
 /// Represents the default value for a column. Supports boolean,
 /// string, integer, float, current timestamp, current unix
 /// timestamp, and null defaults.
@@ -69,10 +54,6 @@ pub type DefaultValue {
   DefaultNull
 }
 
-/// ------------------------------------------------------------
-/// Column Type Type
-/// ------------------------------------------------------------
-///
 /// Represents the data type of a column. Maps to appropriate
 /// SQL types for each database driver.
 ///
@@ -94,10 +75,6 @@ pub type ColumnType {
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Parse
-/// ------------------------------------------------------------
-///
 /// Parse a schema.gleam file content into a Table structure.
 /// Extracts the table name from `pub const name = "..."` and
 /// parses the column definitions from the `table(name, [...])` 
@@ -123,10 +100,6 @@ pub fn parse(content: String) -> Result(Table, String) {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Extract Table Name
-/// ------------------------------------------------------------
-///
 /// Extract the table name from a schema file by looking for the
 /// `pub const name = "tablename"` declaration.
 ///
@@ -150,10 +123,6 @@ fn extract_table_name(content: String) -> Option(String) {
   |> option.from_result()
 }
 
-/// ------------------------------------------------------------
-/// Extract Column List
-/// ------------------------------------------------------------
-///
 /// Extract the column list content from `table(name, [...])`.
 /// Returns the content inside the square brackets.
 ///
@@ -173,10 +142,6 @@ fn extract_column_list(content: String) -> Option(String) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Extract Until Balanced Bracket
-/// ------------------------------------------------------------
-///
 /// Recursively extract content until the matching closing 
 /// bracket is found, tracking bracket depth for nested 
 /// structures.
@@ -196,10 +161,6 @@ fn extract_until_balanced_bracket(s: String, depth: Int, acc: String) -> String 
   }
 }
 
-/// ------------------------------------------------------------
-/// Parse Column List
-/// ------------------------------------------------------------
-///
 /// Parse the column list content into a list of Column structs.
 /// Splits by top-level commas and parses each column definition.
 ///
@@ -209,10 +170,6 @@ fn parse_column_list(list_content: String) -> List(Column) {
   |> list.flat_map(parse_column_item)
 }
 
-/// ------------------------------------------------------------
-/// Split By Top Level Comma
-/// ------------------------------------------------------------
-///
 /// Split a string by commas, but only at the top level (not
 /// inside parentheses). Entry point for the recursive helper.
 ///
@@ -220,10 +177,6 @@ fn split_by_top_level_comma(content: String) -> List(String) {
   split_by_comma_helper(content, 0, "", [])
 }
 
-/// ------------------------------------------------------------
-/// Split By Comma Helper
-/// ------------------------------------------------------------
-///
 /// Recursive helper for splitting by top-level commas. Tracks
 /// parenthesis depth to avoid splitting inside function calls.
 ///
@@ -262,10 +215,6 @@ fn split_by_comma_helper(
   }
 }
 
-/// ------------------------------------------------------------
-/// Parse Column Item
-/// ------------------------------------------------------------
-///
 /// Parse a single column item string into Column structs.
 /// Handles special cases like timestamps() which expand to
 /// multiple columns, and extracts modifiers like nullable().
@@ -305,10 +254,6 @@ fn parse_column_item(item: String) -> List(Column) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Extract Modifiers
-/// ------------------------------------------------------------
-///
 /// Extract modifiers from a column definition. Returns the base
 /// column function, whether it's nullable, any default value,
 /// and any rename_from directive.
@@ -345,10 +290,6 @@ fn extract_modifiers(
   #(base, is_nullable, default_value, renamed_from)
 }
 
-/// ------------------------------------------------------------
-/// Parse Rename From
-/// ------------------------------------------------------------
-///
 /// Parse a rename_from modifier and extract the old column name.
 /// Handles both `rename_from("old")` and 
 /// `schema.rename_from("old")`.
@@ -363,10 +304,6 @@ fn parse_rename_from(s: String) -> Result(String, Nil) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Extract Quoted String
-/// ------------------------------------------------------------
-///
 /// Extract the first double-quoted string from the input.
 /// Returns the content between the first pair of double quotes.
 ///
@@ -382,10 +319,6 @@ fn extract_quoted_string(s: String) -> Result(String, Nil) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Extract Parens Content
-/// ------------------------------------------------------------
-///
 /// Extract the content between the first pair of parentheses.
 /// Returns the trimmed content inside the parentheses.
 ///
@@ -401,10 +334,6 @@ fn extract_parens_content(s: String) -> Result(String, Nil) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Parse Default Value
-/// ------------------------------------------------------------
-///
 /// Parse a default value modifier and extract the default.
 /// Uses a lookup table to match prefix and delegate to the
 /// appropriate extractor function.
@@ -431,10 +360,6 @@ fn parse_default_value(s: String) -> Result(DefaultValue, Nil) {
   |> result.flatten()
 }
 
-/// ------------------------------------------------------------
-/// Extract Bool Default
-/// ------------------------------------------------------------
-///
 /// Extract a boolean default value by checking for "True".
 ///
 fn extract_bool_default(s: String) -> Result(DefaultValue, Nil) {
@@ -444,10 +369,6 @@ fn extract_bool_default(s: String) -> Result(DefaultValue, Nil) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Extract String Default
-/// ------------------------------------------------------------
-///
 /// Extract a string default value from the quoted argument.
 ///
 fn extract_string_default(s: String) -> Result(DefaultValue, Nil) {
@@ -455,10 +376,6 @@ fn extract_string_default(s: String) -> Result(DefaultValue, Nil) {
   |> result.map(DefaultString)
 }
 
-/// ------------------------------------------------------------
-/// Extract Int Default
-/// ------------------------------------------------------------
-///
 /// Extract an integer default value from the parentheses.
 ///
 fn extract_int_default(s: String) -> Result(DefaultValue, Nil) {
@@ -472,10 +389,6 @@ fn extract_int_default(s: String) -> Result(DefaultValue, Nil) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Extract Float Default
-/// ------------------------------------------------------------
-///
 /// Extract a float default value from the parentheses.
 ///
 fn extract_float_default(s: String) -> Result(DefaultValue, Nil) {
@@ -489,10 +402,6 @@ fn extract_float_default(s: String) -> Result(DefaultValue, Nil) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Parse Column Function
-/// ------------------------------------------------------------
-///
 /// Parse a column function call like `string("name")` into a
 /// Column struct. Uses a lookup table for standard column types
 /// and handles special cases for id() and foreign().
@@ -540,10 +449,6 @@ fn parse_column_function(func: String) -> Option(Column) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Parse Named Column
-/// ------------------------------------------------------------
-///
 /// Parse a column function with a name argument like 
 /// `string("name")` into a Column struct with the given type.
 ///
@@ -554,10 +459,6 @@ fn parse_named_column(func: String, col_type: ColumnType) -> Option(Column) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Parse Foreign Column
-/// ------------------------------------------------------------
-///
 /// Parse a foreign key column from 
 /// `foreign("column_name", "table")`. Extracts both the column 
 /// name and the referenced table.
@@ -570,10 +471,6 @@ fn parse_foreign_column(func: String) -> Option(Column) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Columns
-/// ------------------------------------------------------------
-///
 /// Get columns in definition order from a table.
 ///
 pub fn columns(table: Table) -> List(Column) {

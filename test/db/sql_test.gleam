@@ -1124,7 +1124,7 @@ pub fn describe_rename_column_test() {
 // ------------------------------------------------------------- SQLite UUID Validation
 
 pub fn sqlite_auto_uuid_generates_valid_uuid_test() {
-  let assert Ok(conn) = sqlight.open(":memory:")
+  let assert Ok(connection) = sqlight.open(":memory:")
 
   let create_sql =
     "CREATE TABLE test (
@@ -1132,14 +1132,15 @@ pub fn sqlite_auto_uuid_generates_valid_uuid_test() {
     external_id TEXT NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))))
   )"
 
-  let assert Ok(_) = sqlight.exec(create_sql, conn)
-  let assert Ok(_) = sqlight.exec("INSERT INTO test (id) VALUES (1)", conn)
+  let assert Ok(_) = sqlight.exec(create_sql, connection)
+  let assert Ok(_) =
+    sqlight.exec("INSERT INTO test (id) VALUES (1)", connection)
 
   let decoder = decode.at([0], decode.string)
   let assert Ok(rows) =
     sqlight.query(
       "SELECT external_id FROM test WHERE id = 1",
-      conn,
+      connection,
       [],
       decoder,
     )
@@ -1151,7 +1152,7 @@ pub fn sqlite_auto_uuid_generates_valid_uuid_test() {
 }
 
 pub fn sqlite_auto_uuid_generates_unique_uuids_test() {
-  let assert Ok(conn) = sqlight.open(":memory:")
+  let assert Ok(connection) = sqlight.open(":memory:")
 
   let create_sql =
     "CREATE TABLE test (
@@ -1159,14 +1160,17 @@ pub fn sqlite_auto_uuid_generates_unique_uuids_test() {
     external_id TEXT NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6))))
   )"
 
-  let assert Ok(_) = sqlight.exec(create_sql, conn)
-  let assert Ok(_) = sqlight.exec("INSERT INTO test (id) VALUES (1)", conn)
-  let assert Ok(_) = sqlight.exec("INSERT INTO test (id) VALUES (2)", conn)
-  let assert Ok(_) = sqlight.exec("INSERT INTO test (id) VALUES (3)", conn)
+  let assert Ok(_) = sqlight.exec(create_sql, connection)
+  let assert Ok(_) =
+    sqlight.exec("INSERT INTO test (id) VALUES (1)", connection)
+  let assert Ok(_) =
+    sqlight.exec("INSERT INTO test (id) VALUES (2)", connection)
+  let assert Ok(_) =
+    sqlight.exec("INSERT INTO test (id) VALUES (3)", connection)
 
   let decoder = decode.at([0], decode.string)
   let assert Ok(rows) =
-    sqlight.query("SELECT external_id FROM test", conn, [], decoder)
+    sqlight.query("SELECT external_id FROM test", connection, [], decoder)
 
   let assert [uuid1, uuid2, uuid3] = rows
 

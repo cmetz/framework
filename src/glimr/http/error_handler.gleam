@@ -1,11 +1,8 @@
-//// ------------------------------------------------------------
 //// Error Handler
-//// ------------------------------------------------------------
 ////
 //// Provides default error response handlers for HTML and JSON
 //// formats. Intercepts error status codes and replaces empty
 //// responses with user-friendly error messages.
-////
 
 import gleam/bool
 import gleam/json
@@ -14,10 +11,6 @@ import wisp.{type Response}
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Default HTML Error Responses
-/// ------------------------------------------------------------
-///
 /// Middleware that adds HTML error messages to error responses.
 /// Wraps the request handler and checks the response status.
 /// Success responses (2xx) pass through unchanged. Error status
@@ -42,10 +35,6 @@ pub fn default_html_responses(handle_request: fn() -> Response) -> Response {
   }
 }
 
-/// ------------------------------------------------------------
-/// Default JSON Error Responses
-/// ------------------------------------------------------------
-///
 /// Middleware that adds JSON error messages to error responses.
 /// Wraps the request handler and checks the response status.
 /// Success responses (2xx) pass through unchanged. Error status

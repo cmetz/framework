@@ -1,11 +1,8 @@
-//// ------------------------------------------------------------
 //// INSERT Parameter Extraction
-//// ------------------------------------------------------------
 ////
 //// Functions for extracting parameter-to-column mappings from
 //// INSERT statements. Handles the VALUES clause to match column
 //// positions with parameter positions.
-////
 
 import gleam/list
 import gleam/option
@@ -15,10 +12,6 @@ import glimr/db/gen/parser/util
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Extract Insert Param Columns
-/// ------------------------------------------------------------
-///
 /// Extract parameter mappings from INSERT statement.
 /// Pattern: INSERT INTO table (col1, col2) VALUES ($1, $2)
 ///
@@ -29,10 +22,6 @@ pub fn extract(sql: String) -> List(#(Int, String)) {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Do Extract
-/// ------------------------------------------------------------
-///
 /// Internal implementation that returns Result for use with
 /// result.try for cleaner error handling.
 ///
@@ -57,10 +46,6 @@ fn do_extract(sql: String) -> Result(List(#(Int, String)), Nil) {
   Ok(extract_values_params(sql, columns))
 }
 
-/// ------------------------------------------------------------
-/// Extract Values Params
-/// ------------------------------------------------------------
-///
 /// Extract parameter-to-column mappings from a VALUES clause
 /// by matching column positions with parameter positions.
 ///
@@ -72,10 +57,6 @@ fn extract_values_params(
   |> result.unwrap([])
 }
 
-/// ------------------------------------------------------------
-/// Do Extract Values Params
-/// ------------------------------------------------------------
-///
 /// Internal implementation that returns Result for cleaner
 /// error handling with result.try.
 ///

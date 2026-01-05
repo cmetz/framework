@@ -1,7 +1,7 @@
 import app/http/context/ctx.{type Context}
 import gleam/string
 
-// https://github.com/glimr-org/glimr?tab=readme-ov-file#custom-validation-rules
+// docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#custom-validation-rules
 
 pub fn run(value: String, ctx: Context) -> Result(Nil, String) {
   todo

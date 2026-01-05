@@ -1,10 +1,7 @@
-//// ------------------------------------------------------------
 //// UPDATE Parameter Extraction
-//// ------------------------------------------------------------
 ////
 //// Functions for extracting parameter-to-column mappings from
 //// UPDATE SET clauses. Parses assignments like col = $1.
-////
 
 import gleam/list
 import gleam/option.{Some}
@@ -14,10 +11,6 @@ import glimr/db/gen/parser/util
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Extract Update Param Columns
-/// ------------------------------------------------------------
-///
 /// Extract parameter mappings from UPDATE SET clause.
 /// Pattern: UPDATE table SET col1 = $1, col2 = $2
 ///
@@ -28,10 +21,6 @@ pub fn extract(sql: String) -> List(#(Int, String)) {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Do Extract
-/// ------------------------------------------------------------
-///
 /// Internal implementation that returns Result for use with
 /// result.try for cleaner error handling.
 ///
@@ -54,10 +43,6 @@ fn do_extract(sql: String) -> Result(List(#(Int, String)), Nil) {
   Ok(parse_set_assignments(set_clause))
 }
 
-/// ------------------------------------------------------------
-/// Parse Set Assignments
-/// ------------------------------------------------------------
-///
 /// Parse SET clause assignments like "col = $1, col2 = $2"
 /// and extract parameter-to-column mappings.
 ///
@@ -86,10 +71,6 @@ fn parse_set_assignments(clause: String) -> List(#(Int, String)) {
   })
 }
 
-/// ------------------------------------------------------------
-/// Extract Digits
-/// ------------------------------------------------------------
-///
 /// Extract only the leading digits from a string.
 ///
 fn extract_digits(s: String) -> String {

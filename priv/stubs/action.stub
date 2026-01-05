@@ -1,7 +1,7 @@
-import app/http/context/ctx.{type Context}
+import glimr/db/pool.{type Pool}
 
-// https://github.com/glimr-org/glimr?tab=readme-ov-file#creating-actions
+// docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#creating-actions
 
-pub fn run(ctx: Context) -> Result(a, e) {
+pub fn run(pool: Pool) -> Result(a, e) {
   todo
 }

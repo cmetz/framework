@@ -1,25 +1,16 @@
-//// ------------------------------------------------------------
 //// String Utilities
-//// ------------------------------------------------------------
 ////
 //// Helper functions for string manipulation beyond what the
 //// standard library provides. Includes pluralization and other
 //// common string transformations.
-////
 
 import gleam/string
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Pluralize
-/// ------------------------------------------------------------
-///
 /// Simple pluralization of English words. Handles common cases
 /// like words ending in 's', 'x', 'z', 'ch', 'sh' (add 'es'),
 /// consonant + 'y' (change to 'ies'), and default (add 's').
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 ///

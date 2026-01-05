@@ -1,6 +1,6 @@
 import glimr/db/schema.{id, table, unix_timestamps}
 
-// https://github.com/glimr-org/glimr?tab=readme-ov-file#migrations
+// docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#migrations
 
 pub const name = "{{ table_name }}"
 

@@ -1,21 +1,14 @@
-//// ------------------------------------------------------------
 //// Schema DSL
-//// ------------------------------------------------------------
 ////
 //// A fluent builder for defining database table schemas in 
 //// Gleam. Schemas serve as the source of truth for code 
 //// generation, migration generation, and type inference.
-////
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
 
 // ------------------------------------------------------------- Public Types
 
-/// ------------------------------------------------------------
-/// Table Type
-/// ------------------------------------------------------------
-///
 /// Represents a database table definition with its name and
 /// column definitions.
 ///
@@ -23,10 +16,6 @@ pub type Table {
   Table(name: String, columns: List(Column))
 }
 
-/// ------------------------------------------------------------
-/// Column Type
-/// ------------------------------------------------------------
-///
 /// Represents a column definition within a table. Each column
 /// has a name, type, nullability flag, and optional default
 /// value.
@@ -41,10 +30,6 @@ pub type Column {
   )
 }
 
-/// ------------------------------------------------------------
-/// ColumnDef Type
-/// ------------------------------------------------------------
-///
 /// Wrapper for column definitions that allows single columns
 /// or multiple columns (like timestamps) to be used in the
 /// same list.
@@ -54,10 +39,6 @@ pub type ColumnDef {
   Multiple(List(Column))
 }
 
-/// ------------------------------------------------------------
-/// ColumnType Type
-/// ------------------------------------------------------------
-///
 /// Defines the available column types that map to both 
 /// PostgreSQL and SQLite data types. The codegen tool uses 
 /// these to generate appropriate Gleam types and SQL DDL 
@@ -92,10 +73,6 @@ pub type ColumnType {
   Foreign(table: String)
 }
 
-/// ------------------------------------------------------------
-/// Default Type
-/// ------------------------------------------------------------
-///
 /// Defines default values that can be assigned to columns.
 /// Used in migration generation to produce appropriate SQL
 /// DEFAULT clauses.
@@ -113,14 +90,8 @@ pub type Default {
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Create Table
-/// ------------------------------------------------------------
-///
 /// Creates a new table definition with the given name and
 /// column definitions.
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 ///
@@ -151,10 +122,6 @@ pub fn table(name: String, column_defs: List(ColumnDef)) -> Table {
   Table(name: name, columns: cols)
 }
 
-/// ------------------------------------------------------------
-/// Add ID Column
-/// ------------------------------------------------------------
-///
 /// Creates an auto-incrementing integer primary key column 
 /// named "id". This is typically the first column in a table.
 ///
@@ -166,10 +133,6 @@ pub fn id() -> ColumnDef {
   Single(Column("id", Id, False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add String Column
-/// ------------------------------------------------------------
-///
 /// Creates a VARCHAR(255) column with the given name.
 ///
 /// Maps to:
@@ -180,10 +143,6 @@ pub fn string(name: String) -> ColumnDef {
   Single(Column(name, String(Some(255)), False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add Sized String Column
-/// ------------------------------------------------------------
-///
 /// Creates a VARCHAR column with a specific maximum length.
 ///
 /// Maps to:
@@ -194,10 +153,6 @@ pub fn string_sized(name: String, max: Int) -> ColumnDef {
   Single(Column(name, String(Some(max)), False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add Text Column
-/// ------------------------------------------------------------
-///
 /// Creates an unlimited text column. Use for large text content
 /// like blog posts, descriptions, etc.
 ///
@@ -209,10 +164,6 @@ pub fn text(name: String) -> ColumnDef {
   Single(Column(name, Text, False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add Integer Column
-/// ------------------------------------------------------------
-///
 /// Creates a standard integer column.
 ///
 /// Maps to:
@@ -223,10 +174,6 @@ pub fn int(name: String) -> ColumnDef {
   Single(Column(name, Int, False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add Big Integer Column
-/// ------------------------------------------------------------
-///
 /// Creates a large integer column for values exceeding standard
 /// integer range.
 ///
@@ -238,10 +185,6 @@ pub fn bigint(name: String) -> ColumnDef {
   Single(Column(name, BigInt, False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add Float Column
-/// ------------------------------------------------------------
-///
 /// Creates a floating-point number column.
 ///
 /// Maps to:
@@ -252,10 +195,6 @@ pub fn float(name: String) -> ColumnDef {
   Single(Column(name, Float, False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add Boolean Column
-/// ------------------------------------------------------------
-///
 /// Creates a boolean column.
 ///
 /// Maps to:
@@ -266,10 +205,6 @@ pub fn boolean(name: String) -> ColumnDef {
   Single(Column(name, Boolean, False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add Timestamp Column
-/// ------------------------------------------------------------
-///
 /// Creates a timestamp column for date/time values.
 ///
 /// Maps to:
@@ -280,10 +215,6 @@ pub fn timestamp(name: String) -> ColumnDef {
   Single(Column(name, Timestamp, False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add Unix Timestamp Column
-/// ------------------------------------------------------------
-///
 /// Creates an integer column for storing Unix timestamps
 /// (seconds since epoch).
 ///
@@ -295,10 +226,6 @@ pub fn unix_timestamp(name: String) -> ColumnDef {
   Single(Column(name, UnixTimestamp, False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add Date Column
-/// ------------------------------------------------------------
-///
 /// Creates a date column (without time component).
 ///
 /// Maps to:
@@ -309,10 +236,6 @@ pub fn date(name: String) -> ColumnDef {
   Single(Column(name, Date, False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add JSON Column
-/// ------------------------------------------------------------
-///
 /// Creates a JSON column for structured data.
 ///
 /// Maps to:
@@ -323,10 +246,6 @@ pub fn json(name: String) -> ColumnDef {
   Single(Column(name, Json, False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add UUID Column
-/// ------------------------------------------------------------
-///
 /// Creates a UUID column for universally unique identifiers.
 ///
 /// Maps to:
@@ -337,18 +256,12 @@ pub fn uuid(name: String) -> ColumnDef {
   Single(Column(name, Uuid, False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add Foreign Key Column
-/// ------------------------------------------------------------
-///
 /// Creates an integer column that references another table's id.
 /// The column name should follow the convention `{table}_id`.
 ///
 /// Maps to:
 /// - PostgreSQL: `name INTEGER REFERENCES table(id)`
 /// - SQLite: `name INTEGER REFERENCES table(id)`
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 ///
@@ -364,10 +277,6 @@ pub fn foreign(name: String, references: String) -> ColumnDef {
   Single(Column(name, Foreign(references), False, None, None))
 }
 
-/// ------------------------------------------------------------
-/// Add Timestamp Columns
-/// ------------------------------------------------------------
-///
 /// Creates both `created_at` and `updated_at` timestamp columns.
 /// This is a convenience function for the common pattern of
 /// tracking record creation and modification times.
@@ -379,10 +288,6 @@ pub fn timestamps() -> ColumnDef {
   ])
 }
 
-/// ------------------------------------------------------------
-/// Add Unix Timestamp Columns
-/// ------------------------------------------------------------
-///
 /// Creates both `created_at` and `updated_at` as unix timestamp
 /// columns (integer seconds since epoch). This is a convenience
 /// function for the common pattern of tracking record creation
@@ -395,14 +300,8 @@ pub fn unix_timestamps() -> ColumnDef {
   ])
 }
 
-/// ------------------------------------------------------------
-/// Make Column Nullable
-/// ------------------------------------------------------------
-///
 /// Marks the column as nullable (allows NULL).
 /// By default, columns are NOT NULL.
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 ///
@@ -423,10 +322,6 @@ pub fn nullable(def: ColumnDef) -> ColumnDef {
   }
 }
 
-/// ------------------------------------------------------------
-/// Set Boolean Default
-/// ------------------------------------------------------------
-///
 /// Sets a boolean default value for the column.
 ///
 /// *Example:*
@@ -442,10 +337,6 @@ pub fn default_bool(def: ColumnDef, value: Bool) -> ColumnDef {
   set_default(def, DefaultBool(value))
 }
 
-/// ------------------------------------------------------------
-/// Set String Default
-/// ------------------------------------------------------------
-///
 /// Sets a string default value for the column.
 ///
 /// *Example:*
@@ -461,10 +352,6 @@ pub fn default_string(def: ColumnDef, value: String) -> ColumnDef {
   set_default(def, DefaultString(value))
 }
 
-/// ------------------------------------------------------------
-/// Set Integer Default
-/// ------------------------------------------------------------
-///
 /// Sets an integer default value for the column.
 ///
 /// *Example:*
@@ -480,10 +367,6 @@ pub fn default_int(def: ColumnDef, value: Int) -> ColumnDef {
   set_default(def, DefaultInt(value))
 }
 
-/// ------------------------------------------------------------
-/// Set Float Default
-/// ------------------------------------------------------------
-///
 /// Sets a float default value for the column.
 ///
 /// *Example:*
@@ -499,10 +382,6 @@ pub fn default_float(def: ColumnDef, value: Float) -> ColumnDef {
   set_default(def, DefaultFloat(value))
 }
 
-/// ------------------------------------------------------------
-/// Set Default to Current Timestamp
-/// ------------------------------------------------------------
-///
 /// Sets the default value to the current timestamp.
 ///
 /// *Example:*
@@ -518,10 +397,6 @@ pub fn default_now(def: ColumnDef) -> ColumnDef {
   set_default(def, DefaultNow)
 }
 
-/// ------------------------------------------------------------
-/// Set Default to Current Unix Timestamp
-/// ------------------------------------------------------------
-///
 /// Sets the default value to the current Unix timestamp (seconds
 /// since epoch). Use with `unix_timestamp` columns.
 ///
@@ -538,10 +413,6 @@ pub fn default_unix_now(def: ColumnDef) -> ColumnDef {
   set_default(def, DefaultUnixNow)
 }
 
-/// ------------------------------------------------------------
-/// Set Default to Auto-Generated UUID
-/// ------------------------------------------------------------
-///
 /// Sets the default value to an auto-generated UUID. Use with
 /// `uuid` columns for automatic unique identifier generation.
 ///
@@ -562,12 +433,6 @@ pub fn auto_uuid(def: ColumnDef) -> ColumnDef {
   set_default(def, DefaultAutoUuid)
 }
 
-/// ------------------------------------------------------------
-/// Set Default to NULL
-/// ------------------------------------------------------------
-///
-/// Explicitly sets the default value to NULL.
-///
 /// *Example:*
 ///
 /// ```gleam
@@ -582,10 +447,6 @@ pub fn default_null(def: ColumnDef) -> ColumnDef {
   set_default(def, DefaultNull)
 }
 
-/// ------------------------------------------------------------
-/// Rename Column
-/// ------------------------------------------------------------
-///
 /// Indicates that this column was renamed from a previous name.
 /// The migration generator will use `RENAME COLUMN` instead of
 /// drop/add, preserving data. This modifier is automatically
@@ -607,21 +468,20 @@ pub fn rename_from(def: ColumnDef, old_name: String) -> ColumnDef {
   }
 }
 
-// Helper to set default value on a ColumnDef
+/// Returns the table's columns in definition order.
+///
+pub fn columns(t: Table) -> List(Column) {
+  t.columns
+}
+
+// ------------------------------------------------------------- Private Functions
+
+/// Helper to set default value on a ColumnDef
+///
 fn set_default(def: ColumnDef, value: Default) -> ColumnDef {
   case def {
     Single(col) -> Single(Column(..col, default: Some(value)))
     Multiple(cols) ->
       Multiple(list.map(cols, fn(col) { Column(..col, default: Some(value)) }))
   }
-}
-
-/// ------------------------------------------------------------
-/// Get Columns
-/// ------------------------------------------------------------
-///
-/// Returns the table's columns in definition order.
-///
-pub fn columns(t: Table) -> List(Column) {
-  t.columns
 }

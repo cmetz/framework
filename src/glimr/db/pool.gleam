@@ -1,33 +1,26 @@
-//// ------------------------------------------------------------
 //// Connection Pooling
-//// ------------------------------------------------------------
 ////
 //// Provides connection pooling for both PostgreSQL and SQLite.
 //// PostgreSQL uses pog's built-in pooling. SQLite uses an ETS
 //// heir-based pool (ported from pgo) for crash-safe connection
 //// management.
-////
 
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process
 import gleam/option
 import gleam/otp/actor
 import gleam/string
-import glimr/db/connection.{
-  type Config, type Connection, type DbError, ConnectionError, PostgresConfig,
-  PostgresParamsConfig, SqliteConfig,
+import glimr/db/pool_connection.{
+  type Config, type DbError, type PoolConnection, ConnectionError,
+  PostgresConfig, PostgresParamsConfig, SqliteConfig,
 }
 import pog
 import sqlight
 
 // ------------------------------------------------------------- Public Types
 
-/// ------------------------------------------------------------
-/// Pool Type
-/// ------------------------------------------------------------
-///
 /// A connection pool that manages database connections. Use
-/// `start` to create a pool and `with_connection` to borrow
+/// `start` to create a pool and `get_connection` to borrow
 /// connections.
 ///
 pub opaque type Pool {
@@ -37,16 +30,10 @@ pub opaque type Pool {
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Start Pool
-/// ------------------------------------------------------------
-///
 /// Starts a connection pool with the given configuration.
 /// For Postgres, this creates a named connection pool.
 /// For SQLite, this creates a pool of connections managed
 /// by an Erlang process.
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 ///
@@ -71,10 +58,6 @@ pub fn start(config: Config) -> Result(Pool, DbError) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Stop Pool
-/// ------------------------------------------------------------
-///
 /// Gracefully shuts down a connection pool, closing all
 /// connections.
 ///
@@ -91,114 +74,98 @@ pub fn stop(pool: Pool) -> Nil {
   }
 }
 
-/// ------------------------------------------------------------
-/// Get Connection
-/// ------------------------------------------------------------
-///
 /// Borrows a connection from the pool, executes a function,
 /// and returns the connection to the pool. Can be used
-/// in controllers, actions, etc.
-///
-/// ------------------------------------------------------------
+/// in controllers, actions, etc. with the _wc variant of
+/// the generated repository queries. 
 ///
 /// *Example:*
 ///
 /// ```gleam
 /// pub fn show(req: Request, ctx: Context) -> Response {
-///   use conn <- pool.get_connection(ctx.db.pool)
-///   use user <- user_repository.find(conn, 1)
+///   use connection <- pool.get_connection(ctx.db.pool)
+///   let assert Ok(user) = user_repository.find_wc(connection, 1)
+///   
 ///   wisp.html_response("Hello " <> user.name, 200)
 /// }
 /// ```
 ///
-pub fn get_connection(pool: Pool, next: fn(Connection) -> next) -> next {
+pub fn get_connection(pool: Pool, next: fn(PoolConnection) -> next) -> next {
   case checkout(pool) {
     Error(e) -> panic as { "Connection pool failure: " <> string.inspect(e) }
-    Ok(conn) -> {
-      let next = next(conn)
-      checkin(pool, conn)
+    Ok(connection) -> {
+      let next = next(connection)
+      checkin(pool, connection)
 
       next
     }
   }
 }
 
-/// ------------------------------------------------------------
-/// Get Connection (Result)
-/// ------------------------------------------------------------
-///
 /// Borrows a connection from the pool, executes a function,
 /// and returns the connection to the pool. Returns a Result,
 /// useful for operations that need error handling like
 /// console commands that may need a connection.
 ///
-/// ------------------------------------------------------------
-///
 /// *Example:*
 ///
 /// ```gleam
-/// use conn <- pool.get_connection_or(pool)
-/// query.execute(conn, "SELECT 1", [])
+/// use connection <- pool.get_connection_or(pool)
+/// query.execute(connection, "SELECT 1", [])
 /// ```
 ///
 pub fn get_connection_or(
   pool: Pool,
-  f: fn(Connection) -> Result(a, DbError),
+  f: fn(PoolConnection) -> Result(a, DbError),
 ) -> Result(a, DbError) {
   case checkout(pool) {
-    Ok(conn) -> {
-      let result = f(conn)
-      checkin(pool, conn)
+    Ok(connection) -> {
+      let result = f(connection)
+      checkin(pool, connection)
       result
     }
     Error(e) -> Error(e)
   }
 }
 
-/// ------------------------------------------------------------
-/// Get Connection (Unsafe)
-/// ------------------------------------------------------------
-///
 /// Gets a connection from the pool without automatic return.
 /// You MUST call `release` when done. However, if your process
 /// crashes without calling release, the connection will be
 /// automatically reclaimed by the pool (crash-safe).
 ///
-pub fn checkout(pool: Pool) -> Result(Connection, DbError) {
+pub fn checkout(pool: Pool) -> Result(PoolConnection, DbError) {
   case pool {
     PostgresPool(name) -> {
       case pgo_pool_checkout(name) {
-        Ok(#(pool_ref, pog_conn)) -> Ok(connection.from_pog(pog_conn, pool_ref))
+        Ok(#(pool_ref, pog_conn)) ->
+          Ok(pool_connection.from_pog(pog_conn, pool_ref))
         Error(_) -> Error(ConnectionError("No connections available in pool"))
       }
     }
     SqlitePool(name) -> {
       case sqlite_pool_checkout(name, []) {
         Ok(#(pool_ref, sqlight_conn)) ->
-          Ok(connection.from_sqlight(sqlight_conn, pool_ref))
+          Ok(pool_connection.from_sqlight(sqlight_conn, pool_ref))
         Error(_) -> Error(ConnectionError("No connections available in pool"))
       }
     }
   }
 }
 
-/// ------------------------------------------------------------
-/// Checkin Connection
-/// ------------------------------------------------------------
-///
-/// Returns a connection to the pool. Only needed if you used
+/// Returns a pool connection to the pool. Only needed if you used
 /// `checkout` directly instead of `get_connection`.
 ///
-pub fn checkin(pool: Pool, conn: Connection) -> Nil {
+pub fn checkin(pool: Pool, connection: PoolConnection) -> Nil {
   case pool {
     PostgresPool(_) -> {
-      let assert Ok(pool_ref) = connection.get_pool_ref(conn)
-      let _ = pgo_pool_checkin(pool_ref, connection.to_pog(conn))
+      let assert Ok(pool_ref) = pool_connection.get_pool_ref(connection)
+      let _ = pgo_pool_checkin(pool_ref, pool_connection.to_pog(connection))
       Nil
     }
     SqlitePool(_) -> {
-      let assert Ok(pool_ref) = connection.get_pool_ref(conn)
-      let _ = sqlite_pool_checkin(pool_ref, connection.to_sqlight(conn))
+      let assert Ok(pool_ref) = pool_connection.get_pool_ref(connection)
+      let _ =
+        sqlite_pool_checkin(pool_ref, pool_connection.to_sqlight(connection))
       Nil
     }
   }
@@ -206,10 +173,6 @@ pub fn checkin(pool: Pool, conn: Connection) -> Nil {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Start PostgreSQL Pool (URL)
-/// ------------------------------------------------------------
-///
 /// Creates a PostgreSQL connection pool from a URL using pog's
 /// built-in pooling. Generates a unique pool name and configures
 /// the pool size.
@@ -226,10 +189,6 @@ fn start_postgres_pool_url(url: String, pool_size: Int) -> Result(Pool, DbError)
   }
 }
 
-/// ------------------------------------------------------------
-/// Start PostgreSQL Pool (Params)
-/// ------------------------------------------------------------
-///
 /// Creates a PostgreSQL connection pool from individual parameters
 /// using pog's builder pattern. This avoids URL parsing and handles
 /// special characters in passwords correctly.
@@ -260,10 +219,6 @@ fn start_postgres_pool_params(
   start_pog_pool(pool_name, config)
 }
 
-/// ------------------------------------------------------------
-/// Start Pog Pool
-/// ------------------------------------------------------------
-///
 /// Shared helper to start a pog pool from a configured config.
 ///
 fn start_pog_pool(
@@ -281,10 +236,6 @@ fn start_pog_pool(
   }
 }
 
-/// ------------------------------------------------------------
-/// Start SQLite Pool
-/// ------------------------------------------------------------
-///
 /// Creates a SQLite connection pool under the SQLite pool
 /// supervisor. Uses an ETS heir-based implementation (ported
 /// from pgo). Connections are automatically reclaimed if the
@@ -300,10 +251,6 @@ fn start_sqlite_pool(path: String, pool_size: Int) -> Result(Pool, DbError) {
   }
 }
 
-/// ------------------------------------------------------------
-/// SQLite Pool Config
-/// ------------------------------------------------------------
-///
 /// Creates the configuration map for the SQLite pool.
 ///
 fn sqlite_pool_config(pool_size: Int) -> Dynamic {
@@ -312,19 +259,11 @@ fn sqlite_pool_config(pool_size: Int) -> Dynamic {
 
 // ------------------------------------------------------------- FFI Bindings
 
-/// ------------------------------------------------------------
-/// Make Pool Config
-/// ------------------------------------------------------------
-///
 /// Creates the configuration map for the SQLite pool in Erlang.
 ///
 @external(erlang, "sqlite_pool_ffi", "make_config")
 fn make_pool_config(pool_size: Int) -> Dynamic
 
-/// ------------------------------------------------------------
-/// SQLite Pool Supervisor Start
-/// ------------------------------------------------------------
-///
 /// Starts a SQLite connection pool under the supervisor.
 ///
 @external(erlang, "sqlite_pool_sup", "start_pool")
@@ -334,19 +273,11 @@ fn sqlite_pool_sup_start(
   config: Dynamic,
 ) -> Result(Dynamic, Dynamic)
 
-/// ------------------------------------------------------------
-/// SQLite Pool Stop
-/// ------------------------------------------------------------
-///
 /// Stops a SQLite pool managed by the supervisor.
 ///
 @external(erlang, "sqlite_pool_sup", "stop_pool")
 fn sqlite_pool_stop(name: Dynamic) -> Dynamic
 
-/// ------------------------------------------------------------
-/// SQLite Pool Checkout
-/// ------------------------------------------------------------
-///
 /// Checks out a connection from the SQLite pool. Returns the
 /// pool reference and the sqlight connection.
 ///
@@ -356,19 +287,14 @@ fn sqlite_pool_checkout(
   opts: List(#(String, Dynamic)),
 ) -> Result(#(Dynamic, sqlight.Connection), Dynamic)
 
-/// ------------------------------------------------------------
-/// SQLite Pool Checkin
-/// ------------------------------------------------------------
-///
 /// Returns a connection to the SQLite pool.
 ///
 @external(erlang, "sqlite_pool", "checkin")
-fn sqlite_pool_checkin(pool_ref: Dynamic, conn: sqlight.Connection) -> Dynamic
+fn sqlite_pool_checkin(
+  pool_ref: Dynamic,
+  connection: sqlight.Connection,
+) -> Dynamic
 
-/// ------------------------------------------------------------
-/// Postgres Pool Checkout
-/// ------------------------------------------------------------
-///
 /// Checks out a connection from the Postgres pool. Returns the
 /// pool reference and the pog connection.
 ///
@@ -377,28 +303,16 @@ fn pgo_pool_checkout(
   pool_name: Dynamic,
 ) -> Result(#(Dynamic, pog.Connection), Dynamic)
 
-/// ------------------------------------------------------------
-/// Postgres Pool Checkin
-/// ------------------------------------------------------------
-///
 /// Returns a connection to the Postgres pool.
 ///
 @external(erlang, "pgo_pool_ffi", "checkin")
-fn pgo_pool_checkin(pool_ref: Dynamic, conn: pog.Connection) -> Dynamic
+fn pgo_pool_checkin(pool_ref: Dynamic, connection: pog.Connection) -> Dynamic
 
-/// ------------------------------------------------------------
-/// Postgres Pool Stop
-/// ------------------------------------------------------------
-///
 /// Stops a Postgres pool by terminating it via the supervisor.
 ///
 @external(erlang, "pgo_pool_ffi", "stop_pool")
 fn pgo_pool_stop(pool_name: Dynamic) -> Dynamic
 
-/// ------------------------------------------------------------
-/// Name To Dynamic
-/// ------------------------------------------------------------
-///
 /// Converts a process Name to Dynamic for FFI calls.
 ///
 @external(erlang, "pgo_pool_ffi", "identity")

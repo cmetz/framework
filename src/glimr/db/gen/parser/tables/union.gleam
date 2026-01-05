@@ -1,10 +1,7 @@
-//// ------------------------------------------------------------
 //// UNION Handling
-//// ------------------------------------------------------------
 ////
 //// Functions for splitting SQL queries on UNION and UNION ALL
 //// keywords while preserving original case.
-////
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -12,10 +9,6 @@ import gleam/string
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Split
-/// ------------------------------------------------------------
-///
 /// Split SQL query on UNION and UNION ALL keywords, returning
 /// a list of individual query parts.
 ///
@@ -26,10 +19,6 @@ pub fn split(sql: String) -> List(String) {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Do Split
-/// ------------------------------------------------------------
-///
 /// Recursive helper to split on UNION keywords while preserving
 /// original case. Tries UNION ALL first (longer match) before
 /// plain UNION.
@@ -48,10 +37,6 @@ fn do_split(upper: String, original: String, acc: List(String)) -> List(String) 
   }
 }
 
-/// ------------------------------------------------------------
-/// Try Split On Separator
-/// ------------------------------------------------------------
-///
 /// Attempt to split on a separator, returning the before part
 /// (from original), and the after parts (both upper and original)
 /// for continued processing.

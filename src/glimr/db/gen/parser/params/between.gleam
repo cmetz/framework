@@ -1,11 +1,8 @@
-//// ------------------------------------------------------------
 //// BETWEEN Parameter Extraction
-//// ------------------------------------------------------------
 ////
 //// Functions for extracting parameter-to-column mappings from
 //// BETWEEN ... AND ... patterns. Names parameters as start_<col>
 //// and end_<col> for clarity.
-////
 
 import gleam/list
 import gleam/option
@@ -15,10 +12,6 @@ import glimr/db/gen/parser/util
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Extract Between Params
-/// ------------------------------------------------------------
-///
 /// Extract params from BETWEEN ... AND ... patterns. Names the
 /// parameters as start_<column> and end_<column>.
 ///
@@ -28,10 +21,6 @@ pub fn extract(clause: String) -> List(#(Int, String)) {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Do Extract
-/// ------------------------------------------------------------
-///
 /// Recursive helper that finds BETWEEN patterns and extracts
 /// the associated parameters with start_/end_ naming.
 ///
@@ -67,10 +56,6 @@ fn do_extract(
   }
 }
 
-/// ------------------------------------------------------------
-/// Extract Pair Params
-/// ------------------------------------------------------------
-///
 /// Extract the two params from "BETWEEN $N AND $M" pattern,
 /// naming them start_<col> and end_<col>.
 ///
@@ -90,10 +75,6 @@ fn extract_pair_params(
   }
 }
 
-/// ------------------------------------------------------------
-/// Extract First Param
-/// ------------------------------------------------------------
-///
 /// Extract the first parameter ($N) after BETWEEN keyword.
 /// Returns the parameter number and remaining string.
 ///
@@ -104,10 +85,6 @@ fn extract_first_param(s: String) -> Result(#(Int, String), Nil) {
   Ok(#(param, rest))
 }
 
-/// ------------------------------------------------------------
-/// Extract Second Param
-/// ------------------------------------------------------------
-///
 /// Extract the second parameter ($M) after AND keyword.
 /// Returns just the parameter number.
 ///

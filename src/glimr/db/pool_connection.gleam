@@ -1,12 +1,9 @@
-//// ------------------------------------------------------------
-//// Database Connection Abstraction
-//// ------------------------------------------------------------
+//// Pool Connection Abstraction
 ////
-//// Provides a unified interface over PostgreSQL (pog) and 
-//// SQLite (sqlight) database connections. This allows 
-//// application code to work with either database without 
+//// Provides a unified interface over PostgreSQL (pog) and
+//// SQLite (sqlight) pooled database connections. This allows
+//// application code to work with either database without
 //// changes.
-////
 
 import gleam/dynamic.{type Dynamic}
 import gleam/int
@@ -18,21 +15,15 @@ import sqlight
 
 // ------------------------------------------------------------- Public Types
 
-/// ------------------------------------------------------------
-/// Driver Type
-/// ------------------------------------------------------------
-///
-/// Identifies which database driver is being used.
+/// Identifies which database driver is being used. This allows
+/// you to seamlessly use multiple connections of different
+/// database drivers throughout your app.
 ///
 pub type Driver {
   Postgres
   Sqlite
 }
 
-/// ------------------------------------------------------------
-/// Config Type
-/// ------------------------------------------------------------
-///
 /// Configuration for establishing a database connection. Use 
 /// `postgres_config`, `postgres_params_config`, or
 /// `sqlite_config` to create instances.
@@ -50,23 +41,16 @@ pub type Config {
   SqliteConfig(path: String, pool_size: Int)
 }
 
-/// ------------------------------------------------------------
-/// Connection Type
-/// ------------------------------------------------------------
+/// A pooled database connection that abstracts over the
+/// underlying driver. Use with the `query` module functions.
 ///
-/// A database connection that abstracts over the underlying
-/// driver. Use with the `query` module functions.
-///
-pub opaque type Connection {
-  PostgresConnection(inner: pog.Connection, pool_ref: Dynamic)
-  SqliteConnection(inner: sqlight.Connection, pool_ref: Dynamic)
+pub opaque type PoolConnection {
+  PostgresPoolConnection(inner: pog.Connection, pool_ref: Dynamic)
+  SqlitePoolConnection(inner: sqlight.Connection, pool_ref: Dynamic)
 }
 
-/// ------------------------------------------------------------
-/// DbError Type
-/// ------------------------------------------------------------
-///
-/// Unified error type for database operations.
+/// Unified error type for database operations. This allows 
+/// users to handle specific database errors any way they like.
 ///
 pub type DbError {
   /// The requested row was not found (for single-row queries)
@@ -81,12 +65,10 @@ pub type DbError {
   TimeoutError
   /// Result decoding failed
   DecodeError(message: String)
+  /// Connection configuration is invalid or missing required parameters
+  ConfigError(message: String)
 }
 
-/// ------------------------------------------------------------
-/// QueryResult Type
-/// ------------------------------------------------------------
-///
 /// The result of a database query, containing the number of
 /// affected rows and the returned data.
 ///
@@ -94,10 +76,6 @@ pub type QueryResult(t) {
   QueryResult(count: Int, rows: List(t))
 }
 
-/// ------------------------------------------------------------
-/// Value Type
-/// ------------------------------------------------------------
-///
 /// A parameter value that can be passed to a database query.
 /// Use the constructor functions to create values.
 ///
@@ -115,15 +93,11 @@ pub opaque type Value {
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Create Postgres Config
-/// ------------------------------------------------------------
-///
 /// Creates a PostgreSQL configuration from a connection URL.
+/// This configuration will have its own pool of connections
+/// specific to this database.
 ///
 /// URL format: `postgresql://user:password@host:port/database`
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 ///
@@ -138,16 +112,10 @@ pub fn postgres_config(url: String, pool_size pool_size: Int) -> Config {
   PostgresConfig(url: url, pool_size: pool_size)
 }
 
-/// ------------------------------------------------------------
-/// Create Postgres Params Config
-/// ------------------------------------------------------------
-///
 /// Creates a PostgreSQL configuration from individual 
 /// parameters. This is an alternative to `postgres_config` when 
 /// you have separate host, port, database, username, and 
 /// password values.
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 ///
@@ -180,15 +148,11 @@ pub fn postgres_params_config(
   )
 }
 
-/// ------------------------------------------------------------
-/// Create SQLite Config
-/// ------------------------------------------------------------
-///
-/// Creates a SQLite configuration from a file path.
+/// Creates a SQLite configuration from a file path. This 
+/// configuration will have its own pool of connections
+/// specific to this database.
 ///
 /// Use `:memory:` for an in-memory database.
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 ///
@@ -201,120 +165,84 @@ pub fn sqlite_config(path: String, pool_size pool_size: Int) -> Config {
   SqliteConfig(path: path, pool_size: pool_size)
 }
 
-/// ------------------------------------------------------------
-/// Get Driver
-/// ------------------------------------------------------------
+/// Returns the driver type for the provided pool connection.
 ///
-/// Returns the driver type for a connection.
-///
-pub fn driver(conn: Connection) -> Driver {
-  case conn {
-    PostgresConnection(_, _) -> Postgres
-    SqliteConnection(_, _) -> Sqlite
+pub fn driver(connection: PoolConnection) -> Driver {
+  case connection {
+    PostgresPoolConnection(_, _) -> Postgres
+    SqlitePoolConnection(_, _) -> Sqlite
   }
 }
 
-/// ------------------------------------------------------------
-/// Wrap Postgres Connection
-/// ------------------------------------------------------------
-///
 /// Wraps a raw pog connection with its pool reference for use
 /// with the glimr db module. The pool_ref is needed for proper
 /// checkin when releasing the connection.
 ///
-pub fn from_pog(conn: pog.Connection, pool_ref: Dynamic) -> Connection {
-  PostgresConnection(conn, pool_ref)
+pub fn from_pog(connection: pog.Connection, pool_ref: Dynamic) -> PoolConnection {
+  PostgresPoolConnection(connection, pool_ref)
 }
 
-/// ------------------------------------------------------------
-/// Wrap SQLite Connection
-/// ------------------------------------------------------------
-///
 /// Wraps a sqlight connection with its pool reference for use
 /// with the glimr db module. The pool_ref is needed for proper
 /// checkin when releasing the connection.
 ///
-pub fn from_sqlight(conn: sqlight.Connection, pool_ref: Dynamic) -> Connection {
-  SqliteConnection(conn, pool_ref)
+pub fn from_sqlight(
+  connection: sqlight.Connection,
+  pool_ref: Dynamic,
+) -> PoolConnection {
+  SqlitePoolConnection(connection, pool_ref)
 }
 
-/// ------------------------------------------------------------
-/// Get Raw Postgres Connection
-/// ------------------------------------------------------------
+/// Extracts the underlying pog connection. Panics if the pog
+/// connection is not Postgres.
 ///
-/// Extracts the underlying pog connection. Panics if not
-/// Postgres.
-///
-pub fn to_pog(conn: Connection) -> pog.Connection {
-  case conn {
-    PostgresConnection(inner, _) -> inner
-    SqliteConnection(_, _) -> panic as "Cannot convert SQLite connection to pog"
+pub fn to_pog(connection: PoolConnection) -> pog.Connection {
+  case connection {
+    PostgresPoolConnection(inner, _) -> inner
+    SqlitePoolConnection(_, _) ->
+      panic as "Cannot convert SQLite connection to pog"
   }
 }
 
-/// ------------------------------------------------------------
-/// Get Raw SQLite Connection
-/// ------------------------------------------------------------
+/// Extracts the underlying sqlight connection. Panics if the 
+/// connection is not SQLite.
 ///
-/// Extracts the underlying sqlight connection. Panics if not
-/// SQLite.
-///
-pub fn to_sqlight(conn: Connection) -> sqlight.Connection {
-  case conn {
-    SqliteConnection(inner, _) -> inner
-    PostgresConnection(_, _) ->
+pub fn to_sqlight(connection: PoolConnection) -> sqlight.Connection {
+  case connection {
+    SqlitePoolConnection(inner, _) -> inner
+    PostgresPoolConnection(_, _) ->
       panic as "Cannot convert Postgres connection to sqlight"
   }
 }
 
-/// ------------------------------------------------------------
-/// Get Pool Reference
-/// ------------------------------------------------------------
-///
-/// Extracts the pool reference from a connection. This is the
+/// Extracts the pool reference from a pool connection. This is the
 /// reference returned by checkout that must be passed to checkin.
 ///
-pub fn get_pool_ref(conn: Connection) -> Result(Dynamic, Nil) {
-  case conn {
-    SqliteConnection(_, pool_ref) -> Ok(pool_ref)
-    PostgresConnection(_, pool_ref) -> Ok(pool_ref)
+pub fn get_pool_ref(connection: PoolConnection) -> Result(Dynamic, Nil) {
+  case connection {
+    SqlitePoolConnection(_, pool_ref) -> Ok(pool_ref)
+    PostgresPoolConnection(_, pool_ref) -> Ok(pool_ref)
   }
 }
 
-/// ------------------------------------------------------------
-/// Integer Value
-/// ------------------------------------------------------------
-///
 /// Creates an integer parameter value.
 ///
 pub fn int(value: Int) -> Value {
   IntValue(value)
 }
 
-/// ------------------------------------------------------------
-/// Float Value
-/// ------------------------------------------------------------
-///
 /// Creates a float parameter value.
 ///
 pub fn float(value: Float) -> Value {
   FloatValue(value)
 }
 
-/// ------------------------------------------------------------
-/// String Value
-/// ------------------------------------------------------------
-///
 /// Creates a string/text parameter value.
 ///
 pub fn string(value: String) -> Value {
   StringValue(value)
 }
 
-/// ------------------------------------------------------------
-/// Boolean Value
-/// ------------------------------------------------------------
-///
 /// Creates a boolean parameter value.
 /// Note: SQLite stores booleans as integers (0/1).
 ///
@@ -322,30 +250,18 @@ pub fn bool(value: Bool) -> Value {
   BoolValue(value)
 }
 
-/// ------------------------------------------------------------
-/// Null Value
-/// ------------------------------------------------------------
-///
 /// Creates a NULL parameter value.
 ///
 pub fn null() -> Value {
   NullValue
 }
 
-/// ------------------------------------------------------------
-/// Blob Value
-/// ------------------------------------------------------------
-///
 /// Creates a binary/blob parameter value.
 ///
 pub fn blob(value: BitArray) -> Value {
   BlobValue(value)
 }
 
-/// ------------------------------------------------------------
-/// Nullable Value
-/// ------------------------------------------------------------
-///
 /// Creates a parameter value from an Option, converting None to NULL.
 ///
 pub fn nullable(inner: fn(a) -> Value, value: Option(a)) -> Value {
@@ -355,10 +271,6 @@ pub fn nullable(inner: fn(a) -> Value, value: Option(a)) -> Value {
   }
 }
 
-/// ------------------------------------------------------------
-/// Convert to Pog Value
-/// ------------------------------------------------------------
-///
 /// Converts a generic Value to a pog-specific Value for use
 /// with PostgreSQL queries. Panics if given a SQLite-specific
 /// value.
@@ -376,10 +288,6 @@ pub fn to_pog_value(value: Value) -> pog.Value {
   }
 }
 
-/// ------------------------------------------------------------
-/// Convert to SQLite Value
-/// ------------------------------------------------------------
-///
 /// Converts a generic Value to a sqlight-specific Value for use
 /// with SQLite queries. Panics if given a PostgreSQL-specific
 /// value.
@@ -397,10 +305,6 @@ pub fn to_sqlight_value(value: Value) -> sqlight.Value {
   }
 }
 
-/// ------------------------------------------------------------
-/// Convert Postgres Placeholder to SQLite
-/// ------------------------------------------------------------
-///
 /// Converts $1, $2, etc. placeholders to ? for SQLite.
 /// This allows using consistent Postgres-style placeholders
 /// in SQL files.
@@ -414,10 +318,6 @@ pub fn convert_placeholders(sql: String, driver: Driver) -> String {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Convert Postgres to SQLite Placeholders
-/// ------------------------------------------------------------
-///
 /// Entry point for placeholder conversion. Converts the SQL
 /// string to graphemes and delegates to the recursive converter.
 ///
@@ -425,10 +325,6 @@ fn convert_pg_to_sqlite_placeholders(sql: String) -> String {
   do_convert_placeholders(string.to_graphemes(sql), "", False)
 }
 
-/// ------------------------------------------------------------
-/// Do Convert Placeholders
-/// ------------------------------------------------------------
-///
 /// Recursively processes characters, replacing $N placeholders
 /// with ? for SQLite. Tracks whether we're inside a placeholder
 /// to skip the numeric portion after the $.

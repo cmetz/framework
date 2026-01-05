@@ -1,9 +1,9 @@
 import app/http/context/ctx.{type Context}
 import wisp.{type Request, type Response}
 
-// https://github.com/glimr-org/glimr?tab=readme-ov-file#creating-controllers
-// https://github.com/glimr-org/glimr?tab=readme-ov-file#views--responses
-// https://github.com/glimr-org/glimr?tab=readme-ov-file#redirects
+// docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#creating-controllers
+// docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#views--responses
+// docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#redirects
 
 pub fn index(_req: Request, _ctx: Context) -> Response {
   todo

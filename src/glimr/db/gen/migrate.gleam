@@ -1,32 +1,27 @@
-//// ------------------------------------------------------------
 //// Migration Generator
-//// ------------------------------------------------------------
 ////
 //// Compares current schema definitions against a stored snapshot
 //// to detect changes and automatically generate migration SQL.
 ////
 //// The workflow is:
 //// 1. Load the previous schema snapshot from JSON
-//// 2. Scan current schema files in src/data/models/
+//// 2. Scan current schema files in src/data/{conn_name}/models/
 //// 3. Compute the diff (new tables, dropped tables, column changes)
 //// 4. Generate driver-specific SQL (PostgreSQL or SQLite)
-//// 5. Write migration file to src/data/_migrations/
+//// 5. Write migration file to src/data/{conn_name}/_migrations/
 //// 6. Update the snapshot for next run
 ////
 //// Supports column renames via the `rename_from` modifier, which
 //// is automatically cleaned up after migration generation.
 ////
 //// Run with: `gleam run -m glimr/db/gen/migrate`
-////
 
-import dot_env
-import dot_env/env
 import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/string
+import glimr/console/console
 import glimr/db/gen/migrate/cleanup
 import glimr/db/gen/migrate/snapshot
 import glimr/db/gen/migrate/sql.{Postgres, Sqlite}
@@ -37,64 +32,75 @@ import simplifile
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Main
-/// ------------------------------------------------------------
+/// Run migration generation for a named connection.
+/// Uses the folder structure:
+/// - src/data/{name}/models/
+/// - src/data/{name}/_migrations/
+/// - src/data/{name}/._schema_snapshot.json
 ///
-/// Entry point for the migration generator CLI.
-/// Run with: `gleam run -m glimr/db/gen/migrate`
-///
-pub fn main() {
-  run(None)
-}
-
-/// ------------------------------------------------------------
-/// Run
-/// ------------------------------------------------------------
-///
-/// Run migration generation with an optional model filter.
-/// When a filter is provided, only those models are scanned and
-/// the snapshot is merged rather than replaced.
-///
-pub fn run(model_filter: Option(List(String))) {
-  // Load .env file
-  dot_env.load_default()
-
-  io.println("Glimr Migration Generator")
-  io.println("=========================")
-
-  // Determine database driver from environment
-  let driver = case env.get_string("DB_DRIVER") |> result.unwrap("") {
-    "postgres" -> Postgres
-    "sqlite" -> Sqlite
-    other -> {
-      io.println(
-        "Error: DB_DRIVER must be set to 'postgres' or 'sqlite', got: '"
-        <> other
-        <> "'",
-      )
-      panic as "Invalid DB_DRIVER"
-    }
-  }
-
-  let driver_name = case driver {
-    Postgres -> "postgres"
-    Sqlite -> "sqlite"
-  }
-  io.println("Driver: " <> driver_name)
+pub fn run(
+  name: String,
+  driver_type: String,
+  model_filter: Option(List(String)),
+) {
+  io.println("")
+  io.println(console.warning("Glimr Migration Generator"))
+  io.println("  Connection: " <> name)
+  io.println("  Driver: " <> driver_type)
 
   let is_filtered = option.is_some(model_filter)
   case model_filter {
-    Some(models) -> io.println("Models: " <> string.join(models, ", "))
+    Some(models) -> io.println("  Models: " <> string.join(models, ", "))
     None -> Nil
   }
 
-  let models_path = "src/data/models"
-  let snapshot_path = "src/data/.schema_snapshot.json"
-  let migrations_path = "src/data/_migrations"
+  // Folder structure: src/data/{name}/...
+  let base_path = "src/data/" <> name
+  let models_path = base_path <> "/models"
+  let snapshot_path = base_path <> "/._schema_snapshot.json"
+  let migrations_path = base_path <> "/_migrations"
 
+  // Convert driver type string to sql.Driver
+  let sql_driver = case driver_type {
+    "postgres" -> Postgres
+    "sqlite" -> Sqlite
+    _ -> {
+      io.println("  Error: Unknown driver type '" <> driver_type <> "'")
+      io.println("  Valid types: postgres, sqlite")
+      panic as "Invalid driver type"
+    }
+  }
+
+  do_run(
+    models_path,
+    snapshot_path,
+    migrations_path,
+    sql_driver,
+    name,
+    model_filter,
+    is_filtered,
+  )
+}
+
+// ------------------------------------------------------------- Private Functions
+
+/// Internal implementation that handles the actual migration
+/// generation logic.
+///
+fn do_run(
+  models_path: String,
+  snapshot_path: String,
+  migrations_path: String,
+  drv: sql.Driver,
+  driver_name: String,
+  model_filter: Option(List(String)),
+  is_filtered: Bool,
+) {
   // Load existing snapshot
   let old_snapshot = snapshot.load(snapshot_path)
+
+  // Ensure migrations directory exists
+  let _ = simplifile.create_directory_all(migrations_path)
 
   // Scan current schemas (filtered if specified)
   case scan_schemas(models_path, model_filter) {
@@ -102,7 +108,9 @@ pub fn run(model_filter: Option(List(String))) {
       // Validate no duplicate column names
       validation.validate_no_duplicate_columns(tables)
 
-      io.println("Found " <> int.to_string(list.length(tables)) <> " table(s)")
+      io.println(
+        "  Found " <> int.to_string(list.length(tables)) <> " table(s)",
+      )
 
       // Build new snapshot (only for scanned tables)
       let new_snapshot = snapshot.build(tables)
@@ -114,24 +122,25 @@ pub fn run(model_filter: Option(List(String))) {
       case diff.changes {
         [] -> {
           io.println("")
-          io.println("No changes detected.")
+          io.println("  No changes detected.")
         }
         changes -> {
           io.println("")
           io.println(
-            "Detected " <> int.to_string(list.length(changes)) <> " change(s):",
+            "  Detected "
+            <> int.to_string(list.length(changes))
+            <> " change(s):",
           )
           list.each(changes, fn(change) {
-            io.println("  - " <> sql.describe_change(change))
+            io.println("    - " <> sql.describe_change(change))
           })
 
           // Generate migration SQL for the configured driver only
           let timestamp = get_timestamp()
           let filename = timestamp <> "_migration.sql"
-          let migration_sql = sql.generate_sql(diff, driver)
+          let migration_sql = sql.generate_sql(diff, drv)
 
           // Write migration file
-          let _ = simplifile.create_directory_all(migrations_path)
           let migration_path = migrations_path <> "/" <> filename
 
           let content =
@@ -144,7 +153,7 @@ pub fn run(model_filter: Option(List(String))) {
           case simplifile.write(migration_path, content) {
             Ok(_) -> {
               io.println("")
-              io.println("Generated: " <> migration_path)
+              io.println("  Generated: " <> migration_path)
 
               // Update snapshot (merge when filtered, replace when not)
               let final_snapshot = case is_filtered {
@@ -152,32 +161,28 @@ pub fn run(model_filter: Option(List(String))) {
                 False -> new_snapshot
               }
               case snapshot.save(snapshot_path, final_snapshot) {
-                Ok(_) -> io.println("Updated: " <> snapshot_path)
+                Ok(_) -> io.println("  Updated: " <> snapshot_path)
                 Error(_) ->
-                  io.println("Warning: Could not update snapshot file")
+                  io.println("  Warning: Could not update snapshot file")
               }
 
               // Clean up rename_from modifiers from schema files
               cleanup.clean_rename_from_modifiers(models_path)
             }
-            Error(_) -> io.println("Error: Could not write migration file")
+            Error(_) -> io.println("  Error: Could not write migration file")
           }
         }
       }
     }
     Error(err) -> {
-      io.println("Error: " <> err)
+      io.println("  Error: " <> err)
     }
   }
 
   io.println("")
-  io.println("Done!")
+  io.println(console.success("  Done!"))
 }
 
-/// ------------------------------------------------------------
-/// Scan Schemas
-/// ------------------------------------------------------------
-///
 /// Scan model directories and parse their schema files. Applies
 /// the optional filter to limit which models are scanned.
 ///
@@ -227,10 +232,6 @@ fn scan_schemas(
   }
 }
 
-/// ------------------------------------------------------------
-/// Get Timestamp
-/// ------------------------------------------------------------
-///
 /// Get current timestamp in YYYYMMDDHHMMSS format for migration
 /// filenames.
 ///

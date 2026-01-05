@@ -8,18 +8,21 @@
 //// directories if they don't exist.
 ////
 
-import dot_env
-import dot_env/env
+import gleam/dict.{type Dict}
+import gleam/dynamic/decode
 import gleam/erlang/charlist
 import gleam/io
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import glimr/db/driver
 import glimr/db/gen as db_gen
 import glimr/db/gen/migrate as gen_migrate
 import glimr/db/migrate as db_migrate
 import glimr/utils/string as string_utils
+import shellout
 import simplifile
 import wisp
 
@@ -35,7 +38,13 @@ import wisp
 /// values default to None.
 ///
 type Flags {
-  Flags(resource: Bool, file: Bool, migrate: Bool, models: Option(List(String)))
+  Flags(
+    resource: Bool,
+    file: Bool,
+    migrate: Bool,
+    models: Option(List(String)),
+    conns: Option(List(String)),
+  )
 }
 
 // ------------------------------------------------------------- Public Functions
@@ -57,47 +66,35 @@ pub fn main() {
     // Make commands
     ["make:controller", name] -> make_controller(name, resource: flags.resource)
     ["make:middleware", name] -> make_middleware(name)
-    ["make:model", name] -> make_model(name)
+    ["make:model", name] -> make_model(name, flags.conns)
     ["make:request", name] -> make_request(name)
     ["make:rule", name] -> make_rule(name, file: flags.file)
     ["make:action", name] -> make_action(name)
     ["setup:sqlite"] -> setup_sqlite()
+    ["setup:database"] -> setup_database()
 
     // Database commands
     ["db:migrate"] -> db_migrate.main()
     ["db:fresh"] -> db_migrate.run_fresh()
 
     // Generator commands
-    ["gen:db"] -> {
-      // Validate and filter models if specified
-      let models_path = "src/data/models"
-      case validate_models(models_path, flags.models) {
-        Error(invalid) -> {
-          let red = "\u{001b}[31m"
-          let reset = "\u{001b}[0m"
-          io.println(
-            red
-            <> "Error: Model(s) not found: "
-            <> string.join(invalid, ", ")
-            <> reset,
-          )
-        }
-        Ok(model_filter) -> {
-          gen_migrate.run(model_filter)
-          io.println("")
-          db_gen.run(model_filter)
-          case flags.migrate {
-            True -> db_migrate.main()
-            False -> Nil
-          }
-        }
-      }
-    }
+    ["gen:db"] -> gen_db(flags)
 
     _ -> print_help()
   }
 }
 
+// ------------------------------------------------------------- Private Constants
+
+/// ------------------------------------------------------------
+/// Databases Config Path
+/// ------------------------------------------------------------
+///
+const databases_config_path = "src/data/._databases.json"
+
+// ------------------------------------------------------------- Private Functions
+
+// TODO: properly document this
 fn print_help() {
   io.println("Glimr Framework")
   io.println("")
@@ -106,43 +103,52 @@ fn print_help() {
   io.println("Available Commands:")
   io.println("")
   io.println(
-    "  make:controller <name>                Create a new controller. Appends _controller to the end of the name",
+    "  make:controller <name>                      Create a new controller. Appends _controller to the end of the name",
   )
   io.println(
-    "  make:controller <name> --resource     Create a resource controller",
-  )
-  io.println("  make:middleware <name>                Create a new middleware")
-  io.println(
-    "  make:model <name>                     Create a new model with schema and queries",
+    "  make:controller <name> --resource           Create a resource controller",
   )
   io.println(
-    "  make:request <name>                   Create a form request. Appends _request to the end of the name",
-  )
-  io.println("  make:rule <name>                      Create a validation rule")
-  io.println(
-    "  make:rule <name> --file               Create a file validation rule",
+    "  make:middleware <name>                      Create a new middleware",
   )
   io.println(
-    "  make:action <name>                    Create an action. Appends _action to the end of the name",
+    "  make:model <name>                           Create a new model (for 'default' connection)",
   )
-  io.println("")
   io.println(
-    "  setup:sqlite                          Create SQLite database file and configure .env",
+    "  make:model <name> --connection=<name>       Create model for specific connection",
   )
-  io.println("")
-  io.println("  db:migrate                            Run pending migrations")
   io.println(
-    "  db:fresh                              Drop database and re-run migrations",
+    "  make:request <name>                         Create a form request. Appends _request to the end of the name",
+  )
+  io.println(
+    "  make:rule <name>                            Create a validation rule",
+  )
+  io.println(
+    "  make:rule <name> --file                     Create a file validation rule",
+  )
+  io.println(
+    "  make:action <name>                          Create an action. Should return a result type",
   )
   io.println("")
   io.println(
-    "  gen:db                                Generate migrations and query code from schemas",
+    "  setup:database                              Set up a new database connection",
+  )
+  io.println("")
+  io.println(
+    "  db:migrate                                  Run pending migrations",
   )
   io.println(
-    "  gen:db --migrate                      Generate and run migrations",
+    "  db:fresh                                    Drop database and re-run migrations",
+  )
+  io.println("")
+  io.println(
+    "  gen:db                                      Generate repository/migration code (uses 'default' connection)",
   )
   io.println(
-    "  gen:db --model=name                   Generate for specific model(s) only",
+    "  gen:db --connection=<name>                  Generate repository/migraiton code for specific connection",
+  )
+  io.println(
+    "  gen:db --connection=<name> --model=<x>      Generate repository/migration code for specific model(s) only",
   )
   io.println("")
   io.println("Examples:")
@@ -150,17 +156,17 @@ fn print_help() {
   io.println("  ./glimr make:controller post --resource")
   io.println("  ./glimr make:middleware auth")
   io.println("  ./glimr make:model user")
+  io.println("  ./glimr make:model user --connection=analytics")
   io.println("  ./glimr make:request store_user")
   io.println("  ./glimr make:rule username_available")
   io.println("  ./glimr make:action store_user")
+  io.println("  ./glimr setup:database")
   io.println("  ./glimr db:migrate")
   io.println("  ./glimr db:fresh")
   io.println("  ./glimr gen:db")
-  io.println("  ./glimr gen:db --model=user")
-  io.println("  ./glimr gen:db --model=user,post --migrate")
+  io.println("  ./glimr gen:db --connection=main")
+  io.println("  ./glimr gen:db --connection=main --model=user")
 }
-
-// ------------------------------------------------------------- Private Functions
 
 /// ------------------------------------------------------------
 /// Validate Models
@@ -194,6 +200,291 @@ fn validate_models(
 }
 
 /// ------------------------------------------------------------
+/// Load Databases Config
+/// ------------------------------------------------------------
+///
+/// Reads the _databases.json file and returns a Dict mapping
+/// database names to their driver types.
+///
+fn load_databases_config() -> Result(Dict(String, String), Nil) {
+  case simplifile.read(databases_config_path) {
+    Error(_) -> Error(Nil)
+    Ok(content) -> {
+      let decoder = decode.dict(decode.string, decode.string)
+      case json.parse(content, using: decoder) {
+        Ok(databases) -> Ok(databases)
+        Error(_) -> Error(Nil)
+      }
+    }
+  }
+}
+
+/// ------------------------------------------------------------
+/// Save Databases Config
+/// ------------------------------------------------------------
+///
+/// Writes the databases Dict to _databases.json.
+///
+fn save_databases_config(databases: Dict(String, String)) -> Result(Nil, Nil) {
+  let content =
+    databases
+    |> dict.to_list
+    |> list.map(fn(pair) { #(pair.0, json.string(pair.1)) })
+    |> json.object
+    |> json.to_string
+
+  case simplifile.write(databases_config_path, content) {
+    Ok(_) -> Ok(Nil)
+    Error(_) -> Error(Nil)
+  }
+}
+
+/// ------------------------------------------------------------
+/// Setup Database
+/// ------------------------------------------------------------
+///
+/// Interactive setup for a new database connection. Prompts for
+/// driver type and connection name, then creates the folder
+/// structure and updates _databases.json.
+///
+fn setup_database() {
+  io.println("Database Setup")
+  io.println("==============")
+  io.println("")
+
+  // Prompt for driver type
+  io.println("Select database driver:")
+  io.println("  1. sqlite")
+  io.println("  2. postgres")
+  io.println("  3. postgres (URI)")
+  io.println("")
+  let driver_type = case prompt("Enter choice [1]: ") {
+    "" | "1" -> "sqlite"
+    "2" -> "postgres"
+    "3" -> "postgres"
+    other -> {
+      io.println("Invalid choice: " <> other)
+      io.println("Using sqlite as default.")
+      "sqlite"
+    }
+  }
+  io.println("")
+
+  // Prompt for connection name
+  let name =
+    case prompt("Enter connection name [default]: ") {
+      "" -> "default"
+      n -> n
+    }
+    |> string.lowercase
+    |> string.replace(" ", "_")
+
+  io.println("")
+
+  // Create folder structure
+  let base_path = "src/data/" <> name
+  let models_path = base_path <> "/models"
+
+  case simplifile.create_directory_all(models_path) {
+    Ok(_) | Error(simplifile.Eexist) -> {
+      io.println("Created: " <> models_path)
+
+      // Generate phantom type file
+      generate_db_type_file(base_path, name)
+
+      // Update _databases.json
+      let databases = case load_databases_config() {
+        Ok(existing) -> existing
+        Error(_) -> dict.new()
+      }
+      let databases = dict.insert(databases, name, driver_type)
+
+      case save_databases_config(databases) {
+        Ok(_) -> {
+          io.println("Updated: " <> databases_config_path)
+          io.println("")
+          io.println(
+            "Database '"
+            <> name
+            <> "' configured with driver '"
+            <> driver_type
+            <> "'",
+          )
+          io.println("")
+          io.println("Next steps:")
+          io.println(
+            "  1. Create a model: ./glimr make:model user --connection=" <> name,
+          )
+          io.println(
+            "  2. Generate code:  ./glimr gen:db --connection=" <> name,
+          )
+        }
+        Error(_) -> {
+          io.println("Error: Could not update " <> databases_config_path)
+        }
+      }
+    }
+    Error(_) -> {
+      io.println("Error: Could not create directory " <> models_path)
+    }
+  }
+}
+
+/// ------------------------------------------------------------
+/// Gen DB
+/// ------------------------------------------------------------
+///
+/// Generates database code (migrations and repositories) for the
+/// specified connections and models. Loads database configuration,
+/// validates the connection exists, and runs the migration and
+/// code generators.
+///
+fn gen_db(flags: Flags) {
+  let red = "\u{001b}[31m"
+  let reset = "\u{001b}[0m"
+
+  // Load database config
+  case load_databases_config() {
+    Error(_) -> {
+      io.println(red <> "Error: No databases configured." <> reset)
+      io.println("Run `./glimr setup:database` to set up a database.")
+    }
+    Ok(databases) -> {
+      // Default to "default" if no --connection flag, but verify it exists
+      let connection_names = case flags.conns {
+        Some(names) -> Ok(names)
+        None -> {
+          case dict.get(databases, "default") {
+            Ok(_) -> Ok(["default"])
+            Error(_) -> Error(Nil)
+          }
+        }
+      }
+
+      case connection_names {
+        Error(_) -> {
+          io.println(red <> "Error: No 'default' database configured." <> reset)
+          io.println("")
+          io.println("Either:")
+          io.println("  1. Run `./glimr setup:database` and name it 'default'")
+          io.println(
+            "  2. Use `./glimr gen:db --connection=<name>` to specify a database",
+          )
+        }
+        Ok(names) -> {
+          list.each(names, fn(name) {
+            case dict.get(databases, name) {
+              Error(_) -> {
+                io.println(
+                  red <> "Error: Database '" <> name <> "' not found." <> reset,
+                )
+                io.println(
+                  "Run `./glimr setup:database` to set up this database.",
+                )
+              }
+              Ok(driver_type) -> {
+                let models_path = "src/data/" <> name <> "/models"
+                case validate_models(models_path, flags.models) {
+                  Error(invalid) -> {
+                    io.println(
+                      red
+                      <> "Error: Model(s) not found in "
+                      <> models_path
+                      <> ": "
+                      <> string.join(invalid, ", ")
+                      <> reset,
+                    )
+                  }
+                  Ok(model_filter) -> {
+                    io.println("")
+                    gen_migrate.run(name, driver_type, model_filter)
+                    io.println("")
+                    db_gen.run(name, driver_type, model_filter)
+
+                    // Run migrations if --migrate flag is set
+                    case flags.migrate {
+                      True -> {
+                        io.println("")
+                        db_migrate.main()
+                      }
+                      False -> Nil
+                    }
+                  }
+                }
+              }
+            }
+          })
+        }
+      }
+    }
+  }
+}
+
+/// ------------------------------------------------------------
+/// Generate DB Type File
+/// ------------------------------------------------------------
+///
+/// Generates the database type file with the phantom type.
+///
+fn generate_db_type_file(base_path: String, name: String) {
+  let pascal_name = driver.to_pascal_case(name)
+  let type_name = pascal_name <> "Conn"
+
+  let content =
+    "//// ------------------------------------------------------------\n"
+    <> "//// Connection Type: "
+    <> name
+    <> "\n"
+    <> "//// ------------------------------------------------------------\n"
+    <> "////\n"
+    <> "//// This file is generated by glimr. Do not edit.\n"
+    <> "////\n"
+    <> "//// The phantom type "
+    <> type_name
+    <> " enables compile-time checking\n"
+    <> "//// to prevent cross-connection queries in transactions.\n"
+    <> "////\n\n"
+    <> "/// The phantom type for the "
+    <> name
+    <> " connection.\n"
+    <> "pub type "
+    <> type_name
+    <> "\n"
+
+  let file_path = base_path <> "/" <> name <> ".gleam"
+
+  case simplifile.write(file_path, content) {
+    Ok(_) -> {
+      let _ = shellout.command("gleam", ["format", file_path], ".", [])
+      io.println("Created: " <> file_path)
+    }
+    Error(_) -> io.println("Error: Could not write " <> file_path)
+  }
+}
+
+/// ------------------------------------------------------------
+/// Prompt
+/// ------------------------------------------------------------
+///
+/// Displays a prompt and reads a line of input from stdin.
+///
+fn prompt(message: String) -> String {
+  io.print(message)
+  case read_line() {
+    Ok(line) -> string.trim(line)
+    Error(_) -> ""
+  }
+}
+
+@external(erlang, "io", "get_line")
+fn do_get_line(prompt: charlist.Charlist) -> charlist.Charlist
+
+fn read_line() -> Result(String, Nil) {
+  let line = do_get_line(charlist.from_string(""))
+  Ok(charlist.to_string(line))
+}
+
+/// ------------------------------------------------------------
 /// Parse Flags
 /// ------------------------------------------------------------
 ///
@@ -202,7 +493,14 @@ fn validate_models(
 /// Supports both long (--flag) and short (-f) flag formats.
 ///
 fn parse_flags(args: List(String)) -> #(Flags, List(String)) {
-  let flags = Flags(resource: False, file: False, migrate: False, models: None)
+  let flags =
+    Flags(
+      resource: False,
+      file: False,
+      migrate: False,
+      models: None,
+      conns: None,
+    )
   do_parse_flags(args, flags, [])
 }
 
@@ -229,7 +527,23 @@ fn do_parse_flags(
             |> list.filter(fn(s) { s != "" })
           do_parse_flags(rest, Flags(..flags, models: Some(models)), positional)
         }
-        _ -> do_parse_flags(rest, flags, [arg, ..positional])
+        _ -> {
+          // Check for --connection=value pattern
+          case string.split_once(arg, "--connection=") {
+            Ok(#("", value)) -> {
+              let conns =
+                string.split(value, ",")
+                |> list.map(string.trim)
+                |> list.filter(fn(s) { s != "" })
+              do_parse_flags(
+                rest,
+                Flags(..flags, conns: Some(conns)),
+                positional,
+              )
+            }
+            _ -> do_parse_flags(rest, flags, [arg, ..positional])
+          }
+        }
       }
     }
   }
@@ -394,73 +708,131 @@ fn make_action(name: String) {
 /// ------------------------------------------------------------
 ///
 /// Creates a new model directory with schema and query stubs.
-/// The model directory is created in src/data/models/ with a
-/// schema file and query stubs for the configured database
-/// driver. The table name is automatically pluralized from the
-/// model name.
+/// The model directory is created in src/data/{driver}/models/
+/// with a schema file and query stubs. The table name is
+/// automatically pluralized from the model name.
 ///
-fn make_model(name: String) {
-  // Load .env to get DB_DRIVER
-  dot_env.load_default()
+/// If no connection is specified, defaults to "default" if it exists.
+///
+fn make_model(name: String, connections: Option(List(String))) {
+  let red = "\u{001b}[31m"
+  let reset = "\u{001b}[0m"
 
-  let driver = case env.get_string("DB_DRIVER") |> result.unwrap("") {
-    "postgres" -> "postgresql"
-    "sqlite" -> "sqlite"
-    other -> {
-      io.println(
-        "Error: DB_DRIVER must be set to 'postgres' or 'sqlite', got: '"
-        <> other
-        <> "'",
-      )
-      ""
+  // Load database config
+  case load_databases_config() {
+    Error(_) -> {
+      io.println(red <> "Error: No databases configured." <> reset)
+      io.println("Run `./glimr setup:database` to set up a database.")
     }
-  }
-
-  case driver {
-    "" -> Nil
-    _ -> {
-      let model_name = to_snake_case(name)
-      let table_name = string_utils.pluralize(model_name)
-      let model_dir = "src/data/models/" <> model_name
-      let queries_dir = model_dir <> "/queries"
-
-      // Create directories
-      let _ = simplifile.create_directory_all(queries_dir)
-
-      // Create schema file
-      case read_stub("data/schema.stub") {
-        Ok(schema_content) -> {
-          let schema_path = model_dir <> "/" <> model_name <> "_schema.gleam"
-          let schema_output =
-            string.replace(schema_content, "{{ table_name }}", table_name)
-          case simplifile.write(schema_path, schema_output) {
-            Ok(_) -> io.println("  Created: " <> schema_path)
-            Error(_) -> io.println("  Error: Could not write " <> schema_path)
+    Ok(databases) -> {
+      // Determine which connection to use
+      let connection_name = case connections {
+        Some([first, ..]) -> Ok(first)
+        Some([]) | None -> {
+          case dict.get(databases, "default") {
+            Ok(_) -> Ok("default")
+            Error(_) -> Error(Nil)
           }
         }
-        Error(_) -> io.println("Error: Could not read schema stub")
       }
 
-      // Create query files
-      let query_stubs = ["create", "delete", "find", "list_all", "update"]
-      list.each(query_stubs, fn(query_name) {
-        let stub_path = "data/queries/" <> query_name <> ".stub"
-        case read_stub(stub_path) {
-          Ok(query_content) -> {
-            let query_path = queries_dir <> "/" <> query_name <> ".sql"
-            let query_output =
-              string.replace(query_content, "{{ table_name }}", table_name)
-            case simplifile.write(query_path, query_output) {
-              Ok(_) -> io.println("  Created: " <> query_path)
-              Error(_) -> io.println("  Error: Could not write " <> query_path)
+      case connection_name {
+        Error(_) -> {
+          io.println(
+            red <> "Error: No 'default' connection configured." <> reset,
+          )
+          io.println("")
+          io.println("Either:")
+          io.println("  1. Run `./glimr setup:database` and name it 'default'")
+          io.println(
+            "  2. Use `./glimr make:model " <> name <> " --connection=<name>`",
+          )
+        }
+        Ok(connection) -> {
+          case dict.get(databases, connection) {
+            Error(_) -> {
+              io.println(
+                red
+                <> "Error: Connection '"
+                <> connection
+                <> "' not found."
+                <> reset,
+              )
+              io.println(
+                "Run `./glimr setup:database` to set up this connection.",
+              )
+            }
+            Ok(_driver_type) -> {
+              let model_name = to_snake_case(name)
+              let table_name = string_utils.pluralize(model_name)
+              let model_dir =
+                "src/data/" <> connection <> "/models/" <> model_name
+              let queries_dir = model_dir <> "/queries"
+
+              // Create directories
+              let _ = simplifile.create_directory_all(queries_dir)
+
+              io.println(
+                "Creating model '"
+                <> model_name
+                <> "' in connection '"
+                <> connection
+                <> "'",
+              )
+              io.println("")
+
+              // Create schema file
+              case read_stub("data/schema.stub") {
+                Ok(schema_content) -> {
+                  let schema_path =
+                    model_dir <> "/" <> model_name <> "_schema.gleam"
+                  let schema_output =
+                    string.replace(
+                      schema_content,
+                      "{{ table_name }}",
+                      table_name,
+                    )
+                  case simplifile.write(schema_path, schema_output) {
+                    Ok(_) -> io.println("  Created: " <> schema_path)
+                    Error(_) ->
+                      io.println("  Error: Could not write " <> schema_path)
+                  }
+                }
+                Error(_) -> io.println("Error: Could not read schema stub")
+              }
+
+              // Create query files
+              let query_stubs = [
+                "create", "delete", "find", "list_all", "update",
+              ]
+              list.each(query_stubs, fn(query_name) {
+                let stub_path = "data/queries/" <> query_name <> ".stub"
+                case read_stub(stub_path) {
+                  Ok(query_content) -> {
+                    let query_path = queries_dir <> "/" <> query_name <> ".sql"
+                    let query_output =
+                      string.replace(
+                        query_content,
+                        "{{ table_name }}",
+                        table_name,
+                      )
+                    case simplifile.write(query_path, query_output) {
+                      Ok(_) -> io.println("  Created: " <> query_path)
+                      Error(_) ->
+                        io.println("  Error: Could not write " <> query_path)
+                    }
+                  }
+                  Error(_) ->
+                    io.println("  Warning: Could not read stub " <> stub_path)
+                }
+              })
+
+              io.println("")
+              io.println("Model created successfully!")
             }
           }
-          Error(_) -> io.println("  Warning: Could not read stub " <> stub_path)
         }
-      })
-
-      io.println("")
-      io.println("Model created successfully!")
+      }
     }
   }
 }
@@ -474,6 +846,7 @@ fn make_model(name: String) {
 /// the directory src/data/sqlite/ and an empty data.db file.
 ///
 fn setup_sqlite() {
+  // TODO: do this as part of setup:database if sqlite is chosen?
   let db_dir = "src/data/sqlite"
   let db_path = db_dir <> "/data.db"
 
@@ -494,119 +867,11 @@ fn setup_sqlite() {
           }
         }
       }
-
-      // Update .env file
-      update_env_sqlite(db_path)
     }
     Error(_) -> {
       io.println("Error: Could not create directory " <> db_dir)
     }
   }
-}
-
-/// ------------------------------------------------------------
-/// Update Env SQLite
-/// ------------------------------------------------------------
-///
-/// Updates DB_DRIVER to sqlite and DB_DATABASE if present.
-/// Comments out PostgreSQL-specific variables.
-///
-fn update_env_sqlite(db_path: String) {
-  let env_file = ".env"
-  let postgres_vars = [
-    "DB_URL",
-    "DB_HOST",
-    "DB_PORT",
-    "DB_USERNAME",
-    "DB_PASSWORD",
-  ]
-
-  case simplifile.read(env_file) {
-    Ok(content) -> {
-      let new_content =
-        content
-        |> update_env_var("DB_DRIVER", "sqlite")
-        |> update_env_var("DB_DATABASE", db_path)
-        |> comment_out_env_vars(postgres_vars)
-
-      case simplifile.write(env_file, new_content) {
-        Ok(_) -> {
-          io.println("Updated .env with DB_DRIVER=sqlite")
-          io.println("Updated .env with DB_DATABASE=" <> db_path)
-        }
-        Error(_) -> io.println("Error: Could not update .env file")
-      }
-    }
-    Error(_) -> {
-      // Create .env file
-      let content =
-        "DB_DRIVER=sqlite\nDB_DATABASE=" <> db_path <> "\nDB_POOL_SIZE=15\n"
-      case simplifile.write(env_file, content) {
-        Ok(_) -> {
-          io.println("Created .env with DB_DRIVER=sqlite")
-          io.println("Created .env with DB_DATABASE=" <> db_path)
-        }
-        Error(_) -> io.println("Error: Could not create .env file")
-      }
-    }
-  }
-}
-
-/// ------------------------------------------------------------
-/// Update Env Var
-/// ------------------------------------------------------------
-///
-/// Updates an existing environment variable. Uncomments if
-/// commented out. Does nothing if the variable doesn't exist.
-///
-fn update_env_var(content: String, key: String, value: String) -> String {
-  let prefix = key <> "="
-  let commented_prefix = "# " <> key <> "="
-  content
-  |> string.split("\n")
-  |> list.map(fn(line) {
-    case string.starts_with(line, prefix) {
-      True -> key <> "=" <> value
-      False -> {
-        case string.starts_with(line, commented_prefix) {
-          True -> key <> "=" <> value
-          False -> line
-        }
-      }
-    }
-  })
-  |> string.join("\n")
-}
-
-/// ------------------------------------------------------------
-/// Comment Out Env Vars
-/// ------------------------------------------------------------
-///
-/// Comments out the specified environment variables if they
-/// exist and aren't already commented out.
-///
-fn comment_out_env_vars(content: String, vars: List(String)) -> String {
-  list.fold(vars, content, fn(acc, var) { comment_out_env_var(acc, var) })
-}
-
-/// ------------------------------------------------------------
-/// Comment Out Env Var
-/// ------------------------------------------------------------
-///
-/// Comments out a single environment variable if it exists and
-/// isn't already commented out.
-///
-fn comment_out_env_var(content: String, var: String) -> String {
-  let prefix = var <> "="
-  content
-  |> string.split("\n")
-  |> list.map(fn(line) {
-    case string.starts_with(line, prefix) {
-      True -> "# " <> line
-      False -> line
-    }
-  })
-  |> string.join("\n")
 }
 
 /// ------------------------------------------------------------

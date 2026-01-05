@@ -1,10 +1,7 @@
-//// ------------------------------------------------------------
 //// Migration Validation
-//// ------------------------------------------------------------
 ////
 //// Validation helpers for schema definitions. Ensures schemas
 //// are valid before generating migrations.
-////
 
 import gleam/list
 import gleam/string
@@ -12,10 +9,6 @@ import glimr/db/gen/schema_parser.{type Table}
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Validate No Duplicate Columns
-/// ------------------------------------------------------------
-///
 /// Validate that no table has duplicate column names. Panics
 /// with an error message if duplicates are found.
 ///
@@ -43,20 +36,12 @@ pub fn validate_no_duplicate_columns(tables: List(Table)) -> Nil {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Find Duplicates
-/// ------------------------------------------------------------
-///
 /// Find duplicate strings in a list.
 ///
 fn find_duplicates(items: List(String)) -> List(String) {
   find_duplicates_helper(items, [], [])
 }
 
-/// ------------------------------------------------------------
-/// Find Duplicates Helper
-/// ------------------------------------------------------------
-///
 /// Recursive helper for find_duplicates.
 ///
 fn find_duplicates_helper(

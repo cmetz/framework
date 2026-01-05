@@ -1,10 +1,7 @@
-//// ------------------------------------------------------------
 //// Column Extraction
-//// ------------------------------------------------------------
 ////
 //// Functions for extracting selected columns from SQL queries.
 //// Handles SELECT and RETURNING clauses, including CTEs.
-////
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -12,10 +9,6 @@ import gleam/string
 
 // ------------------------------------------------------------- Public Types
 
-/// ------------------------------------------------------------
-/// Selected Column Type
-/// ------------------------------------------------------------
-///
 /// A column selected in a SELECT or RETURNING clause. Tracks
 /// the optional table alias, column name or expression, and
 /// any AS alias.
@@ -26,10 +19,6 @@ pub type SelectedColumn {
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Extract Columns
-/// ------------------------------------------------------------
-///
 /// Extract selected columns from SELECT or RETURNING clauses.
 /// Handles CTEs by finding the main SELECT at parenthesis
 /// depth zero.
@@ -58,10 +47,6 @@ pub fn extract(sql: String) -> List(SelectedColumn) {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Find Keyword At Depth Zero
-/// ------------------------------------------------------------
-///
 /// Find a SQL keyword that appears at parenthesis depth zero.
 /// Used to find the main SELECT/FROM in queries with CTEs or
 /// subqueries. Returns the position of the keyword if found.
@@ -74,6 +59,10 @@ fn find_keyword_at_depth_zero(
   do_find_keyword_at_depth_zero(s, trigger_char, keyword, 0, 0)
 }
 
+/// Recursively Find a SQL keyword that appears at parenthesis 
+/// depth zero. Used to find the main SELECT/FROM in queries 
+/// with CTEs or subqueries.
+///
 fn do_find_keyword_at_depth_zero(
   s: String,
   trigger_char: String,
@@ -127,10 +116,6 @@ fn do_find_keyword_at_depth_zero(
   }
 }
 
-/// ------------------------------------------------------------
-/// Extract Returning Columns
-/// ------------------------------------------------------------
-///
 /// Extract columns from a RETURNING clause (used with INSERT,
 /// UPDATE, DELETE statements).
 ///
@@ -145,10 +130,6 @@ fn extract_returning_columns(sql: String, upper: String) -> List(SelectedColumn)
   }
 }
 
-/// ------------------------------------------------------------
-/// Parse Column List
-/// ------------------------------------------------------------
-///
 /// Parse a comma-separated list of column expressions into
 /// SelectedColumn structs.
 ///
@@ -164,10 +145,6 @@ fn parse_column_list(columns_str: String) -> List(SelectedColumn) {
   })
 }
 
-/// ------------------------------------------------------------
-/// Split Respecting Parens
-/// ------------------------------------------------------------
-///
 /// Split a string on commas, but don't split inside parentheses.
 /// Used to correctly parse column lists with function calls.
 ///
@@ -175,10 +152,6 @@ fn split_respecting_parens(s: String) -> List(String) {
   do_split_respecting_parens(s, 0, "", [])
 }
 
-/// ------------------------------------------------------------
-/// Do Split Respecting Parens
-/// ------------------------------------------------------------
-///
 /// Recursive helper that tracks parenthesis depth and only
 /// splits on commas when at depth zero.
 ///
@@ -208,10 +181,6 @@ fn do_split_respecting_parens(
   }
 }
 
-/// ------------------------------------------------------------
-/// Parse Column Expr
-/// ------------------------------------------------------------
-///
 /// Parse a single column expression like "u.name AS user_name"
 /// into a SelectedColumn struct with table, name, and alias.
 ///
@@ -235,10 +204,6 @@ fn parse_column_expr(expr: String) -> SelectedColumn {
   }
 }
 
-/// ------------------------------------------------------------
-/// Parse Table Column
-/// ------------------------------------------------------------
-///
 /// Parse a column reference like "u.name" into optional table
 /// alias and column name. Function calls are not split.
 ///

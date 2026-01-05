@@ -1,10 +1,7 @@
-//// ------------------------------------------------------------
 //// Schema Parser Code Generation Helpers
-//// ------------------------------------------------------------
 ////
 //// Helper functions for code generation that map column types
 //// to their Gleam type names and decoder functions.
-////
 
 import glimr/db/gen/schema_parser.{
   type ColumnType, BigInt, Boolean, Date, Float, Foreign, Id, Int, Json, String,
@@ -13,10 +10,6 @@ import glimr/db/gen/schema_parser.{
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Gleam Type
-/// ------------------------------------------------------------
-///
 /// Get the Gleam type name for a column type. Used for code
 /// generation to determine the appropriate Gleam type.
 ///
@@ -38,10 +31,6 @@ pub fn gleam_type(col_type: ColumnType) -> String {
   }
 }
 
-/// ------------------------------------------------------------
-/// Decoder Function
-/// ------------------------------------------------------------
-///
 /// Get the decoder function name for a column type. Used for
 /// code generation to determine the appropriate decoder.
 ///

@@ -1,11 +1,8 @@
-//// ------------------------------------------------------------
 //// Table Extraction
-//// ------------------------------------------------------------
 ////
 //// Functions for extracting table names from SQL queries.
 //// Handles FROM, JOIN, INSERT INTO, UPDATE, DELETE FROM,
 //// UNION/UNION ALL queries, and subqueries.
-////
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -16,10 +13,6 @@ import glimr/db/gen/parser/util
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Extract Tables
-/// ------------------------------------------------------------
-///
 /// Extract all table names from the SQL query. Handles FROM,
 /// JOIN, INSERT INTO, UPDATE, DELETE FROM, UNION queries,
 /// and subqueries.
@@ -45,11 +38,8 @@ pub fn extract(sql: String) -> List(String) {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Extract From Single Query
-/// ------------------------------------------------------------
-///
-/// Extract tables from a single SQL query (no UNION handling).
+/// Extract tables from a single SQL query. This function does
+/// not handle UNION cases.
 ///
 fn extract_from_single_query(sql: String) -> List(String) {
   let upper = string.uppercase(sql)
@@ -81,10 +71,6 @@ fn extract_from_single_query(sql: String) -> List(String) {
   find_join_tables(upper, sql, tables)
 }
 
-/// ------------------------------------------------------------
-/// Extract Table After Keyword
-/// ------------------------------------------------------------
-///
 /// Extract a table name that appears after a SQL keyword like
 /// INSERT INTO, UPDATE, or DELETE FROM.
 ///
@@ -106,10 +92,6 @@ fn extract_table_after_keyword(
   }
 }
 
-/// ------------------------------------------------------------
-/// Extract Table Name From Clause
-/// ------------------------------------------------------------
-///
 /// Extract the table name from a FROM clause, preserving the
 /// original case from the SQL.
 ///
@@ -128,11 +110,8 @@ fn extract_table_name_from_clause(original: String) -> Option(String) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Find Join Tables
-/// ------------------------------------------------------------
-///
-/// Recursively find all table names from JOIN clauses.
+/// Recursively find all table names that are from JOIN 
+/// clauses and keep track of these join tables.
 ///
 fn find_join_tables(
   upper: String,
@@ -157,22 +136,16 @@ fn find_join_tables(
   }
 }
 
-/// ------------------------------------------------------------
-/// Extract From Subqueries
-/// ------------------------------------------------------------
-///
-/// Find and extract tables from subqueries (SELECT statements
+/// Find and extract tables from subqueries (SEECT statements
 /// inside parentheses). Handles nested subqueries recursively.
 ///
 fn extract_from_subqueries(sql: String) -> List(String) {
   do_extract_from_subqueries(string.uppercase(sql), sql, [])
 }
 
-/// ------------------------------------------------------------
-/// Do Extract From Subqueries
-/// ------------------------------------------------------------
-///
-/// Recursive helper to find subqueries and extract their tables.
+/// Recursively find and extract tables from subqueries 
+/// (SEECT statements inside parentheses). Handles nested 
+/// subqueries recursively we well.
 ///
 fn do_extract_from_subqueries(
   upper: String,

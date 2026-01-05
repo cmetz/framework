@@ -2,29 +2,29 @@ import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleeunit/should
-import glimr/db/connection
 import glimr/db/pool
+import glimr/db/pool_connection
 import sqlight
 
 // ------------------------------------------------------------- Basic Checkout/Checkin
 
 pub fn basic_checkout_checkin_test() {
-  let config = connection.sqlite_config(":memory:", pool_size: 2)
+  let config = pool_connection.sqlite_config(":memory:", pool_size: 2)
   let assert Ok(p) = pool.start(config)
 
   // Checkout a connection
-  let assert Ok(conn) = pool.checkout(p)
+  let assert Ok(connection) = pool.checkout(p)
 
   // Verify it's a valid SQLite connection by running a simple query
-  let raw_conn = connection.to_sqlight(conn)
-  let assert Ok(_) = sqlight.exec("SELECT 1", raw_conn)
+  let raw_connection = pool_connection.to_sqlight(connection)
+  let assert Ok(_) = sqlight.exec("SELECT 1", raw_connection)
 
   // Release the connection
-  pool.checkin(p, conn)
+  pool.checkin(p, connection)
 
   // Should be able to checkout again
-  let assert Ok(conn2) = pool.checkout(p)
-  pool.checkin(p, conn2)
+  let assert Ok(connection2) = pool.checkout(p)
+  pool.checkin(p, connection2)
 
   pool.stop(p)
 }
@@ -32,14 +32,14 @@ pub fn basic_checkout_checkin_test() {
 // ------------------------------------------------------------- Connection Returned on Normal Release
 
 pub fn get_connection_returns_connection_to_pool_test() {
-  let config = connection.sqlite_config(":memory:", pool_size: 1)
+  let config = pool_connection.sqlite_config(":memory:", pool_size: 1)
   let assert Ok(p) = pool.start(config)
 
   // Use get_connection which automatically returns connection
   let result =
-    pool.get_connection(p, fn(conn) {
-      let raw_conn = connection.to_sqlight(conn)
-      let assert Ok(_) = sqlight.exec("SELECT 1", raw_conn)
+    pool.get_connection(p, fn(connection) {
+      let raw_connection = pool_connection.to_sqlight(connection)
+      let assert Ok(_) = sqlight.exec("SELECT 1", raw_connection)
       "success"
     })
 
@@ -47,23 +47,23 @@ pub fn get_connection_returns_connection_to_pool_test() {
   |> should.equal("success")
 
   // Connection should be back in pool - can checkout again
-  let assert Ok(conn) = pool.checkout(p)
-  pool.checkin(p, conn)
+  let assert Ok(connection) = pool.checkout(p)
+  pool.checkin(p, connection)
 
   pool.stop(p)
 }
 
 pub fn get_connection_or_returns_connection_to_pool_test() {
-  let config = connection.sqlite_config(":memory:", pool_size: 1)
+  let config = pool_connection.sqlite_config(":memory:", pool_size: 1)
   let assert Ok(p) = pool.start(config)
 
   // Use get_connection_or which automatically returns connection
   let result =
-    pool.get_connection_or(p, fn(conn) {
-      let raw_conn = connection.to_sqlight(conn)
-      case sqlight.exec("SELECT 1", raw_conn) {
+    pool.get_connection_or(p, fn(connection) {
+      let raw_connection = pool_connection.to_sqlight(connection)
+      case sqlight.exec("SELECT 1", raw_connection) {
         Ok(_) -> Ok("success")
-        Error(_) -> Error(connection.QueryError("failed"))
+        Error(_) -> Error(pool_connection.QueryError("failed"))
       }
     })
 
@@ -71,8 +71,8 @@ pub fn get_connection_or_returns_connection_to_pool_test() {
   |> should.equal(Ok("success"))
 
   // Connection should be back in pool - can checkout again
-  let assert Ok(conn) = pool.checkout(p)
-  pool.checkin(p, conn)
+  let assert Ok(connection) = pool.checkout(p)
+  pool.checkin(p, connection)
 
   pool.stop(p)
 }
@@ -80,7 +80,7 @@ pub fn get_connection_or_returns_connection_to_pool_test() {
 // ------------------------------------------------------------- Connection Reclaimed on Process Crash
 
 pub fn connection_reclaimed_when_process_crashes_test() {
-  let config = connection.sqlite_config(":memory:", pool_size: 1)
+  let config = pool_connection.sqlite_config(":memory:", pool_size: 1)
   let assert Ok(p) = pool.start(config)
 
   // Spawn a process that checks out the only connection and then crashes
@@ -88,7 +88,7 @@ pub fn connection_reclaimed_when_process_crashes_test() {
 
   let child =
     spawn_process(fn() {
-      let assert Ok(_conn) = pool.checkout(p)
+      let assert Ok(_connection) = pool.checkout(p)
       // Signal parent we have the connection
       process.send(parent, "checked_out")
       // Wait a bit then crash without checking in
@@ -108,18 +108,18 @@ pub fn connection_reclaimed_when_process_crashes_test() {
 
   // Now we should be able to checkout the connection again
   // (it was reclaimed by the pool)
-  let assert Ok(conn) = pool.checkout(p)
+  let assert Ok(connection) = pool.checkout(p)
 
   // Verify the connection still works
-  let raw_conn = connection.to_sqlight(conn)
-  let assert Ok(_) = sqlight.exec("SELECT 1", raw_conn)
+  let raw_connection = pool_connection.to_sqlight(connection)
+  let assert Ok(_) = sqlight.exec("SELECT 1", raw_connection)
 
-  pool.checkin(p, conn)
+  pool.checkin(p, connection)
   pool.stop(p)
 }
 
 pub fn connection_reclaimed_when_process_exits_normally_without_checkin_test() {
-  let config = connection.sqlite_config(":memory:", pool_size: 1)
+  let config = pool_connection.sqlite_config(":memory:", pool_size: 1)
   let assert Ok(p) = pool.start(config)
 
   // Spawn a process that checks out and exits without checking in
@@ -127,7 +127,7 @@ pub fn connection_reclaimed_when_process_exits_normally_without_checkin_test() {
 
   let _child =
     spawn_process(fn() {
-      let assert Ok(_conn) = pool.checkout(p)
+      let assert Ok(_connection) = pool.checkout(p)
       process.send(parent, "checked_out")
       // Exit normally without checkin
       Nil
@@ -141,8 +141,8 @@ pub fn connection_reclaimed_when_process_exits_normally_without_checkin_test() {
   process.sleep(50)
 
   // Connection should be reclaimed
-  let assert Ok(conn) = pool.checkout(p)
-  pool.checkin(p, conn)
+  let assert Ok(connection) = pool.checkout(p)
+  pool.checkin(p, connection)
 
   pool.stop(p)
 }
@@ -150,11 +150,11 @@ pub fn connection_reclaimed_when_process_exits_normally_without_checkin_test() {
 // ------------------------------------------------------------- Pool Exhaustion
 
 pub fn pool_exhaustion_returns_error_test() {
-  let config = connection.sqlite_config(":memory:", pool_size: 1)
+  let config = pool_connection.sqlite_config(":memory:", pool_size: 1)
   let assert Ok(p) = pool.start(config)
 
   // Checkout the only connection
-  let assert Ok(conn1) = pool.checkout(p)
+  let assert Ok(connection1) = pool.checkout(p)
 
   // Try to checkout another - should fail (pool exhausted)
   // Note: The pool uses a timeout, so this should return an error
@@ -166,11 +166,11 @@ pub fn pool_exhaustion_returns_error_test() {
   }
 
   // Release the first connection
-  pool.checkin(p, conn1)
+  pool.checkin(p, connection1)
 
   // Now checkout should work again
-  let assert Ok(conn2) = pool.checkout(p)
-  pool.checkin(p, conn2)
+  let assert Ok(connection2) = pool.checkout(p)
+  pool.checkin(p, connection2)
 
   pool.stop(p)
 }
@@ -178,29 +178,32 @@ pub fn pool_exhaustion_returns_error_test() {
 // ------------------------------------------------------------- Multiple Concurrent Checkouts
 
 pub fn multiple_concurrent_checkouts_test() {
-  let config = connection.sqlite_config(":memory:", pool_size: 3)
+  let config = pool_connection.sqlite_config(":memory:", pool_size: 3)
   let assert Ok(p) = pool.start(config)
 
   // Checkout all 3 connections
-  let assert Ok(conn1) = pool.checkout(p)
-  let assert Ok(conn2) = pool.checkout(p)
-  let assert Ok(conn3) = pool.checkout(p)
+  let assert Ok(connection1) = pool.checkout(p)
+  let assert Ok(connection2) = pool.checkout(p)
+  let assert Ok(connection3) = pool.checkout(p)
 
   // All connections should work
-  let assert Ok(_) = sqlight.exec("SELECT 1", connection.to_sqlight(conn1))
-  let assert Ok(_) = sqlight.exec("SELECT 2", connection.to_sqlight(conn2))
-  let assert Ok(_) = sqlight.exec("SELECT 3", connection.to_sqlight(conn3))
+  let assert Ok(_) =
+    sqlight.exec("SELECT 1", pool_connection.to_sqlight(connection1))
+  let assert Ok(_) =
+    sqlight.exec("SELECT 2", pool_connection.to_sqlight(connection2))
+  let assert Ok(_) =
+    sqlight.exec("SELECT 3", pool_connection.to_sqlight(connection3))
 
   // Release all
-  pool.checkin(p, conn1)
-  pool.checkin(p, conn2)
-  pool.checkin(p, conn3)
+  pool.checkin(p, connection1)
+  pool.checkin(p, connection2)
+  pool.checkin(p, connection3)
 
   pool.stop(p)
 }
 
 pub fn concurrent_processes_can_use_pool_test() {
-  let config = connection.sqlite_config(":memory:", pool_size: 3)
+  let config = pool_connection.sqlite_config(":memory:", pool_size: 3)
   let assert Ok(p) = pool.start(config)
 
   let parent: Subject(Int) = process.new_subject()
@@ -209,9 +212,9 @@ pub fn concurrent_processes_can_use_pool_test() {
   list.range(1, 3)
   |> list.each(fn(i) {
     spawn_process(fn() {
-      pool.get_connection(p, fn(conn) {
-        let raw_conn = connection.to_sqlight(conn)
-        let assert Ok(_) = sqlight.exec("SELECT 1", raw_conn)
+      pool.get_connection(p, fn(connection) {
+        let raw_connection = pool_connection.to_sqlight(connection)
+        let assert Ok(_) = sqlight.exec("SELECT 1", raw_connection)
         process.send(parent, i)
       })
     })
@@ -224,18 +227,18 @@ pub fn concurrent_processes_can_use_pool_test() {
   let assert Ok(_) = process.receive(parent, 1000)
 
   // All connections should be back in pool
-  let assert Ok(conn1) = pool.checkout(p)
-  let assert Ok(conn2) = pool.checkout(p)
-  let assert Ok(conn3) = pool.checkout(p)
+  let assert Ok(connection1) = pool.checkout(p)
+  let assert Ok(connection2) = pool.checkout(p)
+  let assert Ok(connection3) = pool.checkout(p)
 
-  pool.checkin(p, conn1)
-  pool.checkin(p, conn2)
-  pool.checkin(p, conn3)
+  pool.checkin(p, connection1)
+  pool.checkin(p, connection2)
+  pool.checkin(p, connection3)
 
   pool.stop(p)
 }
 
-// ------------------------------------------------------------- FFI Helpers
+// ------------------------------------------------------------- FFI Bindings
 
 @external(erlang, "erlang", "spawn")
 fn spawn_process(func: fn() -> a) -> Pid

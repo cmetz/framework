@@ -1,11 +1,8 @@
-//// ------------------------------------------------------------
 //// Migration SQL Generation
-//// ------------------------------------------------------------
 ////
 //// Handles schema diffing and SQL generation for migrations.
 //// Compares old and new snapshots to detect changes, then
 //// generates driver-specific SQL statements.
-////
 
 import gleam/dict
 import gleam/float
@@ -20,10 +17,6 @@ import glimr/db/gen/schema_parser.{type Column, type ColumnType, type Table}
 
 // ------------------------------------------------------------- Public Types
 
-/// ------------------------------------------------------------
-/// Driver Type
-/// ------------------------------------------------------------
-///
 /// Database driver for SQL generation. Determines syntax
 /// differences between PostgreSQL and SQLite.
 ///
@@ -32,10 +25,6 @@ pub type Driver {
   Sqlite
 }
 
-/// ------------------------------------------------------------
-/// Schema Diff Type
-/// ------------------------------------------------------------
-///
 /// The computed difference between old and new schema snapshots.
 /// Contains a list of changes that need to be migrated.
 ///
@@ -43,10 +32,6 @@ pub type SchemaDiff {
   SchemaDiff(changes: List(Change))
 }
 
-/// ------------------------------------------------------------
-/// Change Type
-/// ------------------------------------------------------------
-///
 /// A single schema change that needs to be migrated. Variants
 /// cover table creation/deletion and column add/drop/alter/rename.
 ///
@@ -61,10 +46,6 @@ pub type Change {
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Compute Diff
-/// ------------------------------------------------------------
-///
 /// Compute the diff between old and new snapshots. Detects new
 /// tables, dropped tables, and column changes. When is_filtered
 /// is true, skips drop detection to avoid false positives.
@@ -102,10 +83,6 @@ pub fn compute_diff(
   )
 }
 
-/// ------------------------------------------------------------
-/// Sort Changes By Dependency
-/// ------------------------------------------------------------
-///
 /// Topologically sort CreateTable changes so tables are created
 /// after their foreign key dependencies. Other changes are
 /// preserved in their original order at the end.
@@ -142,10 +119,6 @@ fn sort_changes_by_dependency(changes: List(Change)) -> List(Change) {
   list.append(sorted_creates, other_changes)
 }
 
-/// ------------------------------------------------------------
-/// Topological Sort
-/// ------------------------------------------------------------
-///
 /// Sort tables so that tables with foreign key dependencies
 /// come after the tables they reference. Uses Kahn's algorithm.
 ///
@@ -176,10 +149,6 @@ fn topological_sort(tables: List(Table), all_names: List(String)) -> List(Table)
   do_topological_sort(tables, get_deps, [])
 }
 
-/// ------------------------------------------------------------
-/// Do Topological Sort
-/// ------------------------------------------------------------
-///
 /// Recursive helper for topological sort using Kahn's algorithm.
 /// Each iteration finds tables whose dependencies are already 
 /// in the sorted list, adds them, and recurses with the 
@@ -217,10 +186,6 @@ fn do_topological_sort(
   }
 }
 
-/// ------------------------------------------------------------
-/// Generate SQL
-/// ------------------------------------------------------------
-///
 /// Generate SQL for all changes in a diff. CreateTable changes
 /// are sorted by dependency order so tables referencing other
 /// tables are created after their dependencies.
@@ -232,10 +197,6 @@ pub fn generate_sql(diff: SchemaDiff, driver: Driver) -> String {
   |> string.join("\n\n")
 }
 
-/// ------------------------------------------------------------
-/// Describe Change
-/// ------------------------------------------------------------
-///
 /// Human-readable description of a Change for CLI output.
 ///
 pub fn describe_change(change: Change) -> String {
@@ -252,10 +213,6 @@ pub fn describe_change(change: Change) -> String {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Compute Table Diff
-/// ------------------------------------------------------------
-///
 /// Compute column-level changes for a single table. Detects
 /// renames (via rename_from), additions, drops, and alterations.
 ///
@@ -421,10 +378,6 @@ fn compute_table_diff(old: Snapshot, table: Table) -> List(Change) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Change To SQL
-/// ------------------------------------------------------------
-///
 /// Convert a single Change to its SQL representation.
 ///
 fn change_to_sql(change: Change, driver: Driver) -> String {
@@ -451,10 +404,6 @@ fn change_to_sql(change: Change, driver: Driver) -> String {
   }
 }
 
-/// ------------------------------------------------------------
-/// Create Table SQL
-/// ------------------------------------------------------------
-///
 /// Generate CREATE TABLE SQL with all column definitions.
 ///
 fn create_table_sql(table: Table, driver: Driver) -> String {
@@ -466,10 +415,6 @@ fn create_table_sql(table: Table, driver: Driver) -> String {
   "CREATE TABLE " <> table.name <> " (\n" <> columns_sql <> "\n);"
 }
 
-/// ------------------------------------------------------------
-/// Column Definition
-/// ------------------------------------------------------------
-///
 /// Generate a column definition including type, constraints,
 /// and defaults.
 ///
@@ -492,10 +437,6 @@ fn column_definition(column: Column, driver: Driver) -> String {
   column.name <> " " <> type_sql <> pk_sql <> nullable_sql <> default_sql
 }
 
-/// ------------------------------------------------------------
-/// Column Type SQL
-/// ------------------------------------------------------------
-///
 /// Map a ColumnType to driver-specific SQL type.
 ///
 fn column_type_sql(col_type: ColumnType, driver: Driver) -> String {
@@ -535,10 +476,6 @@ fn column_type_sql(col_type: ColumnType, driver: Driver) -> String {
   }
 }
 
-/// ------------------------------------------------------------
-/// Primary Key SQL
-/// ------------------------------------------------------------
-///
 /// Generate PRIMARY KEY clause for Id columns.
 ///
 fn primary_key_sql(driver: Driver) -> String {
@@ -548,10 +485,6 @@ fn primary_key_sql(driver: Driver) -> String {
   }
 }
 
-/// ------------------------------------------------------------
-/// Default To SQL
-/// ------------------------------------------------------------
-///
 /// Convert a DefaultValue to its SQL representation.
 ///
 fn default_to_sql(
@@ -588,20 +521,12 @@ fn default_to_sql(
   }
 }
 
-/// ------------------------------------------------------------
-/// Escape SQL String
-/// ------------------------------------------------------------
-///
 /// Escape single quotes in SQL string literals.
 ///
 fn escape_sql_string(s: String) -> String {
   string.replace(s, "'", "''")
 }
 
-/// ------------------------------------------------------------
-/// Alter Column SQL
-/// ------------------------------------------------------------
-///
 /// Generate ALTER COLUMN SQL. Note: SQLite doesn't support
 /// ALTER COLUMN, so a comment is generated instead.
 ///
@@ -624,10 +549,6 @@ fn alter_column_sql(table: String, column: Column, driver: Driver) -> String {
   }
 }
 
-/// ------------------------------------------------------------
-/// Types Compatible For Rename
-/// ------------------------------------------------------------
-///
 /// Check if two column types are compatible for a rename
 /// operation. Allows exact matches and semantically equivalent
 /// types (e.g., String/Text, Int/BigInt).

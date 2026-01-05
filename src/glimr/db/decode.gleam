@@ -1,6 +1,4 @@
-//// ------------------------------------------------------------
 //// Database Decoder Utilities
-//// ------------------------------------------------------------
 ////
 //// Custom decoders that handle differences between PostgreSQL
 //// and SQLite. SQLite lacks native boolean support and stores
@@ -8,21 +6,14 @@
 ////
 //// These decoders abstract over driver differences so application
 //// code can work with Gleam types regardless of the backend.
-////
 
 import gleam/dynamic/decode
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Bool Decoder
-/// ------------------------------------------------------------
-///
 /// Decodes a boolean value from either a native boolean (PostgreSQL)
 /// or an integer 0/1 (SQLite). Returns `True` for any non-zero
 /// integer, `False` for zero.
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 ///
@@ -39,10 +30,6 @@ pub fn bool() -> decode.Decoder(Bool) {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Int As Bool
-/// ------------------------------------------------------------
-///
 /// Decodes an integer as a boolean. Returns `True` for any
 /// non-zero value, `False` for zero. Used as a fallback decoder
 /// for SQLite which stores booleans as integers.

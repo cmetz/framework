@@ -35,9 +35,9 @@ pub fn generate_produces_pool_and_wc_variants_test() {
   |> string.contains("pub fn find(pool pool: Pool")
   |> should.be_true()
 
-  // Should contain the _wc function with Connection
+  // Should contain the _wc function with PoolConnection
   result
-  |> string.contains("pub fn find_wc(conn conn: Connection")
+  |> string.contains("pub fn find_wc(connection connection: PoolConnection")
   |> should.be_true()
 }
 
@@ -72,9 +72,9 @@ pub fn generate_list_query_produces_pool_and_wc_variants_test() {
   |> string.contains(") -> Result(List(")
   |> should.be_true()
 
-  // Should contain the _wc function with Connection
+  // Should contain the _wc function with PoolConnection
   result
-  |> string.contains("pub fn list_all_wc(conn conn: Connection")
+  |> string.contains("pub fn list_all_wc(connection connection: PoolConnection")
   |> should.be_true()
 }
 
@@ -99,9 +99,9 @@ pub fn generate_execute_query_produces_pool_and_wc_variants_test() {
   |> string.contains("pub fn delete(pool pool: Pool")
   |> should.be_true()
 
-  // Should contain the _wc function with Connection
+  // Should contain the _wc function with PoolConnection
   result
-  |> string.contains("pub fn delete_wc(conn conn: Connection")
+  |> string.contains("pub fn delete_wc(connection connection: PoolConnection")
   |> should.be_true()
 
   // Both should return Result(Int, DbError)
@@ -139,12 +139,12 @@ pub fn generate_main_function_uses_checkout_and_release_test() {
 
   // Main function should use pool.checkin
   result
-  |> string.contains("pool.checkin(pool, conn)")
+  |> string.contains("pool.checkin(pool, connection)")
   |> should.be_true()
 
   // Main function should call the _wc variant
   result
-  |> string.contains("find_wc(conn: conn")
+  |> string.contains("find_wc(connection: connection")
   |> should.be_true()
 }
 
@@ -195,9 +195,9 @@ pub fn generate_wc_function_uses_connection_directly_test() {
 
   let result = generator.generate("user", table, queries)
 
-  // _wc function should use query.select_all directly with conn
+  // _wc function should use query.select_all directly with connection
   result
-  |> string.contains("query.select_all(conn,")
+  |> string.contains("query.select_all(connection,")
   |> should.be_true()
 }
 
@@ -246,7 +246,7 @@ pub fn generate_multiple_queries_all_have_both_variants_test() {
   |> string.contains("pub fn find(pool pool: Pool")
   |> should.be_true()
   result
-  |> string.contains("pub fn find_wc(conn conn: Connection")
+  |> string.contains("pub fn find_wc(connection connection: PoolConnection")
   |> should.be_true()
 
   // list_all
@@ -254,7 +254,7 @@ pub fn generate_multiple_queries_all_have_both_variants_test() {
   |> string.contains("pub fn list_all(pool pool: Pool")
   |> should.be_true()
   result
-  |> string.contains("pub fn list_all_wc(conn conn: Connection")
+  |> string.contains("pub fn list_all_wc(connection connection: PoolConnection")
   |> should.be_true()
 
   // delete
@@ -262,7 +262,7 @@ pub fn generate_multiple_queries_all_have_both_variants_test() {
   |> string.contains("pub fn delete(pool pool: Pool")
   |> should.be_true()
   result
-  |> string.contains("pub fn delete_wc(conn conn: Connection")
+  |> string.contains("pub fn delete_wc(connection connection: PoolConnection")
   |> should.be_true()
 }
 
@@ -302,14 +302,14 @@ pub fn generate_query_with_multiple_params_test() {
   // _wc function should also have both params
   result
   |> string.contains(
-    "pub fn find_by_name_and_status_wc(conn conn: Connection, name name: String, status status: Int)",
+    "pub fn find_by_name_and_status_wc(connection connection: PoolConnection, name name: String, status status: Int)",
   )
   |> should.be_true()
 
   // Main function should pass params to _wc
   result
   |> string.contains(
-    "find_by_name_and_status_wc(conn: conn, name: name, status: status)",
+    "find_by_name_and_status_wc(connection: connection, name: name, status: status)",
   )
   |> should.be_true()
 }

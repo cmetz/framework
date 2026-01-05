@@ -1,6 +1,4 @@
-//// ------------------------------------------------------------
 //// Parameter Extraction
-//// ------------------------------------------------------------
 ////
 //// Functions for extracting SQL parameters ($1, $2, etc.) and
 //// mapping them to column names. This module provides the main
@@ -12,7 +10,6 @@
 //// - params/update: UPDATE SET clause handling
 //// - params/where: WHERE clause parsing
 //// - params/between: BETWEEN pattern handling
-////
 
 import gleam/int
 import gleam/list
@@ -25,10 +22,6 @@ import glimr/db/gen/parser/util
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Extract Params
-/// ------------------------------------------------------------
-///
 /// Extract all parameter numbers ($1, $2, etc.) from SQL query.
 /// Returns a sorted, deduplicated list of parameter numbers.
 ///
@@ -38,10 +31,6 @@ pub fn extract(sql: String) -> List(Int) {
   |> list.sort(by: int.compare)
 }
 
-/// ------------------------------------------------------------
-/// Extract Param Columns
-/// ------------------------------------------------------------
-///
 /// Extract parameter-to-column mappings from SQL. Handles
 /// INSERT, UPDATE SET, and WHERE clauses.
 ///
@@ -59,10 +48,6 @@ pub fn extract_columns(sql: String) -> List(#(Int, String)) {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Do Extract Params
-/// ------------------------------------------------------------
-///
 /// Recursive helper that scans for $ followed by digits and
 /// accumulates found parameter numbers.
 ///
@@ -79,10 +64,6 @@ fn do_extract_params(s: String, acc: List(Int)) -> List(Int) {
   }
 }
 
-/// ------------------------------------------------------------
-/// Dedupe By Param Num
-/// ------------------------------------------------------------
-///
 /// Remove duplicate parameter mappings, keeping only the first
 /// occurrence of each parameter number.
 ///

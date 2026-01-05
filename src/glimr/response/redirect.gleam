@@ -1,11 +1,8 @@
-//// ------------------------------------------------------------
 //// Redirect Helpers
-//// ------------------------------------------------------------
 ////
 //// Builder pattern for creating HTTP redirects with support
 //// for flash messages and returning to previous pages. Use
 //// the builder to construct redirects before sending.
-////
 
 import gleam/dict.{type Dict}
 import gleam/list
@@ -14,12 +11,10 @@ import wisp.{type Request, type Response}
 
 // ------------------------------------------------------------- Public Types
 
-/// ------------------------------------------------------------
-/// Redirect Type
-/// ------------------------------------------------------------
-///
 /// Redirect builder for constructing HTTP redirect responses.
-/// Contains the target path and optional flash data for session.
+/// Using this type constructor provides extra flexibility
+/// like optionally flashing messages or using a helper
+/// function to redirect back.
 ///
 pub type Redirect {
   Redirect(path: String, flash_data: Dict(String, String))
@@ -27,14 +22,8 @@ pub type Redirect {
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Build Redirect
-/// ------------------------------------------------------------
-///
 /// Creates a new redirect builder with empty path and flash
 /// data. Use this to start building a redirect response.
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 /// 
@@ -48,14 +37,8 @@ pub fn build() -> Redirect {
   Redirect("", dict.from_list([]))
 }
 
-/// ------------------------------------------------------------
-/// Set Redirect Path
-/// ------------------------------------------------------------
-///
 /// Sets the target path for the redirect. This is where the
 /// user will be sent when the redirect executes.
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 /// 
@@ -69,15 +52,9 @@ pub fn to(redirect: Redirect, path: String) -> Redirect {
   Redirect(..redirect, path: normalize_path(path))
 }
 
-/// ------------------------------------------------------------
-/// Redirect to Previous Page
-/// ------------------------------------------------------------
-///
 /// Sets the redirect path to the previous page from the Referer 
 /// header. Panics if no referer is found. Useful for cancel or 
 /// back buttons that must have a referrer.
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 /// 
@@ -93,15 +70,9 @@ pub fn back(redirect: Redirect, req: Request) -> Redirect {
   Redirect(..redirect, path: path)
 }
 
-/// ------------------------------------------------------------
-/// Add Flash Data
-/// ------------------------------------------------------------
-///
 /// Adds a key-value pair to the flash data that will be stored 
 /// in the session and available on the next request. Useful for 
 /// success/error messages after redirects.
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 /// 
@@ -120,15 +91,9 @@ pub fn flash(
   Redirect(..redirect, flash_data: data)
 }
 
-/// ------------------------------------------------------------
-/// Execute Redirect
-/// ------------------------------------------------------------
-///
 /// Converts the redirect builder into an HTTP redirect response.
 /// This finalizes the redirect and sends it to the client.
 /// Flash data will be written to session when implemented.
-///
-/// ------------------------------------------------------------
 ///
 /// *Example:*
 /// 
@@ -145,10 +110,6 @@ pub fn go(redirect: Redirect) -> Response {
 
 // ------------------------------------------------------------- Private Functions
 
-/// ------------------------------------------------------------
-/// Get Referer
-/// ------------------------------------------------------------
-///
 /// Extracts the Referer header from an HTTP request. Returns 
 /// Ok(referer) if the header exists, or Error(Nil) if the 
 /// referer header is not present.
@@ -158,10 +119,6 @@ fn get_referer(request: Request) -> Result(String, Nil) {
   |> list.key_find("referer")
 }
 
-/// ------------------------------------------------------------
-/// Normalize Path
-/// ------------------------------------------------------------
-///
 /// Removes the final leading slash from the path if present.
 /// Used to normalize file paths for consistent reading.
 ///

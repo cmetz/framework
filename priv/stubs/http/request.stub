@@ -3,25 +3,30 @@ import glimr/forms/form
 import glimr/forms/validator
 import wisp.{type FormData, type Request, type, Response}
 
-// https://github.com/glimr-org/glimr?tab=readme-ov-file#form-validation
+// docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#form-validation
 
+/// Define the shape of the data returned after validation
+///
 pub type Data {
-  // Define the shape of the data returned after validation
   Data(todo)
 }
 
+/// Define your form's validation rules
+///
 pub fn rules(form: FormData) {
   [
-    // Define your form's validation rules
     todo
   ]
 }
 
+/// Set the form data returned after validation
+///
 pub fn data(form: FormData) -> Data {
-  // Set the form data returned after validation
   Data(todo)
 }
 
+/// Run your validation rules
+///
 pub fn validate(req: Request, ctx: Context, next: fn(Data) -> Response) {
   use validated <- validator.run(req, ctx, rules, data)
 

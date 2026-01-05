@@ -1,6 +1,4 @@
-//// ------------------------------------------------------------
 //// SQL Parser
-//// ------------------------------------------------------------
 ////
 //// Parses SQL query files to extract table names, columns,
 //// and parameter references.
@@ -13,19 +11,14 @@
 //// - parser/columns: Column extraction (SELECT, RETURNING)
 //// - parser/params: Parameter extraction and mapping
 //// - parser/util: Shared utilities
-////
 
 import glimr/db/gen/parser/columns
 import glimr/db/gen/parser/normalize
 import glimr/db/gen/parser/params
 import glimr/db/gen/parser/tables
 
-// ------------------------------------------------------------- Types
+// ------------------------------------------------------------- Public Types
 
-/// ------------------------------------------------------------
-/// Parsed Query Type
-/// ------------------------------------------------------------
-///
 /// The result of parsing a SQL query, containing all extracted
 /// metadata needed for code generation.
 ///
@@ -40,10 +33,6 @@ pub type ParsedQuery {
 
 // ------------------------------------------------------------- Public Functions
 
-/// ------------------------------------------------------------
-/// Parse SQL
-/// ------------------------------------------------------------
-///
 /// Parse a SQL query to extract tables, columns, parameters,
 /// and parameter-to-column mappings. This is the main entry
 /// point for the SQL parser.
