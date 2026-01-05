@@ -78,7 +78,7 @@ fn generate_models(models_path: String, model_filter: Option(List(String))) {
       })
 
       io.println("")
-      io.println(console.success("  Done!"))
+      io.println(console.success("  Successfully generated queries!"))
     }
     Error(_) -> {
       io.println("  Error: Could not read " <> models_path)

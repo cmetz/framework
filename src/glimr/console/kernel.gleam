@@ -5,6 +5,7 @@
 //// Glimr's default console commands.
 
 import gleam/io
+import gleam/list
 import glimr/console/command.{type Command}
 import glimr/console/console
 import glimr/db/driver.{type Connection}
@@ -18,6 +19,7 @@ import glimr/internal/console/commands/make_middleware
 import glimr/internal/console/commands/make_model
 import glimr/internal/console/commands/make_request
 import glimr/internal/console/commands/make_rule
+import glimr/internal/console/commands/setup_database
 
 // ------------------------------------------------------------- Public Functions
 
@@ -25,7 +27,7 @@ import glimr/internal/console/commands/make_rule
 /// Commands are generic over ctx so they can be merged
 /// with user commands into a single unified list.
 ///
-pub fn commands() -> List(Command) {
+pub fn commands(connections: List(Connection)) -> List(Command) {
   [
     db_migrate.command(),
     gen_db.command(),
@@ -37,6 +39,7 @@ pub fn commands() -> List(Command) {
     make_rule.command(),
     make_command.command(),
     make_model.command(),
+    setup_database.command(connections),
   ]
 }
 
@@ -46,9 +49,10 @@ pub fn commands() -> List(Command) {
 /// GlimrContext from it if needed.
 ///
 pub fn run(
-  commands commands: List(Command),
+  commands app_commands: List(Command),
   db_connections db_connections: List(Connection),
 ) {
+  let commands = list.append(commands(db_connections), app_commands)
   let args = command.get_args()
 
   case args {

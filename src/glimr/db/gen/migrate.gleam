@@ -180,7 +180,7 @@ fn do_run(
   }
 
   io.println("")
-  io.println(console.success("  Done!"))
+  io.println(console.success("  Successfully generated migrations!"))
 }
 
 /// Scan model directories and parse their schema files. Applies
