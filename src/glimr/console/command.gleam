@@ -306,7 +306,11 @@ fn run(
       case cmd {
         Command(handler:, ..) -> {
           case parse_and_validate(cmd.name, cmd.args, raw_args) {
-            Ok(parsed) -> handler(parsed)
+            Ok(parsed) -> {
+              // Resolve _default to actual connection name if db option is used
+              let parsed = resolve_default_connection(parsed, connections)
+              handler(parsed)
+            }
             Error(_) -> Nil
           }
         }
@@ -336,6 +340,30 @@ fn run(
         }
       }
     }
+  }
+}
+
+/// Resolves _default in the database option to the actual
+/// connection name. Used by regular Command handlers that
+/// need the connection name but don't need a pool.
+///
+fn resolve_default_connection(
+  parsed: ParsedArgs,
+  connections: List(Connection),
+) -> ParsedArgs {
+  case dict.get(parsed.options, "database") {
+    Ok("_default") -> {
+      case list.find(connections, driver.is_default) {
+        Ok(conn) -> {
+          let actual_name = driver.connection_name(conn)
+          let updated_options =
+            dict.insert(parsed.options, "database", actual_name)
+          ParsedArgs(..parsed, options: updated_options)
+        }
+        Error(_) -> parsed
+      }
+    }
+    _ -> parsed
   }
 }
 
