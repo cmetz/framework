@@ -1,5 +1,5 @@
 name = "glimr"
-version = "0.5.2"
+version = "0.5.3"
 
 description = "A batteries-included web framework for Gleam"
 licences = ["MIT"]
@@ -7,7 +7,7 @@ repository = { type = "github", user = "glimr-org", repo = "framework" }
 # links = [{ title = "Website", href = "" }]
 
 [dependencies]
-gleam_stdlib = ">= 0.44.0 and < 2.0.0"
+gleam_stdlib = ">= 0.44.0 and < 0.67.1"
 wisp = ">= 2.1.0 and < 3.0.0"
 gleam_http = ">= 4.3.0 and < 5.0.0"
 gleam_json = ">= 3.1.0 and < 4.0.0"
