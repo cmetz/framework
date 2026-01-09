@@ -9,7 +9,6 @@ pub fn connection_type_postgres_uri_test() {
   let conn =
     PostgresUriConnection(
       name: "main",
-      is_default: True,
       url: Ok("postgres://localhost/db"),
       pool_size: Ok(10),
     )
@@ -22,7 +21,6 @@ pub fn connection_type_postgres_params_test() {
   let conn =
     PostgresConnection(
       name: "main",
-      is_default: True,
       host: Ok("localhost"),
       port: Ok(5432),
       database: Ok("mydb"),
@@ -37,12 +35,7 @@ pub fn connection_type_postgres_params_test() {
 
 pub fn connection_type_sqlite_test() {
   let conn =
-    SqliteConnection(
-      name: "local",
-      is_default: True,
-      database: Ok("./data.db"),
-      pool_size: Ok(5),
-    )
+    SqliteConnection(name: "local", database: Ok("./data.db"), pool_size: Ok(5))
 
   driver.connection_type(conn)
   |> should.equal(Sqlite)
@@ -54,7 +47,6 @@ pub fn connection_name_postgres_uri_test() {
   let conn =
     PostgresUriConnection(
       name: "production",
-      is_default: True,
       url: Ok("postgres://localhost/db"),
       pool_size: Ok(10),
     )
@@ -67,7 +59,6 @@ pub fn connection_name_postgres_params_test() {
   let conn =
     PostgresConnection(
       name: "analytics",
-      is_default: False,
       host: Ok("localhost"),
       port: Ok(5432),
       database: Ok("mydb"),
@@ -84,7 +75,6 @@ pub fn connection_name_sqlite_test() {
   let conn =
     SqliteConnection(
       name: "cache",
-      is_default: False,
       database: Ok("./cache.db"),
       pool_size: Ok(5),
     )
@@ -93,54 +83,12 @@ pub fn connection_name_sqlite_test() {
   |> should.equal("cache")
 }
 
-// ------------------------------------------------------------- is_default
-
-pub fn is_default_true_postgres_uri_test() {
-  let conn =
-    PostgresUriConnection(
-      name: "main",
-      is_default: True,
-      url: Ok("postgres://localhost/db"),
-      pool_size: Ok(10),
-    )
-
-  driver.is_default(conn)
-  |> should.be_true
-}
-
-pub fn is_default_false_postgres_uri_test() {
-  let conn =
-    PostgresUriConnection(
-      name: "secondary",
-      is_default: False,
-      url: Ok("postgres://localhost/db2"),
-      pool_size: Ok(5),
-    )
-
-  driver.is_default(conn)
-  |> should.be_false
-}
-
-pub fn is_default_sqlite_test() {
-  let conn =
-    SqliteConnection(
-      name: "local",
-      is_default: True,
-      database: Ok("./data.db"),
-      pool_size: Ok(5),
-    )
-
-  driver.is_default(conn)
-  |> should.be_true
-}
-
 // ------------------------------------------------------------- with_pool_size
 
 pub fn with_pool_size_postgres_uri_test() {
   let conn =
     PostgresUriConnection(
       name: "main",
-      is_default: True,
       url: Ok("postgres://localhost/db"),
       pool_size: Ok(10),
     )
@@ -148,8 +96,7 @@ pub fn with_pool_size_postgres_uri_test() {
   let updated = driver.with_pool_size(conn, 1)
 
   case updated {
-    PostgresUriConnection(_, _, _, pool_size) ->
-      pool_size |> should.equal(Ok(1))
+    PostgresUriConnection(_, _, pool_size) -> pool_size |> should.equal(Ok(1))
     _ -> should.fail()
   }
 }
@@ -158,7 +105,6 @@ pub fn with_pool_size_postgres_params_test() {
   let conn =
     PostgresConnection(
       name: "main",
-      is_default: True,
       host: Ok("localhost"),
       port: Ok(5432),
       database: Ok("mydb"),
@@ -170,7 +116,7 @@ pub fn with_pool_size_postgres_params_test() {
   let updated = driver.with_pool_size(conn, 2)
 
   case updated {
-    PostgresConnection(_, _, _, _, _, _, _, pool_size) ->
+    PostgresConnection(_, _, _, _, _, _, pool_size) ->
       pool_size |> should.equal(Ok(2))
     _ -> should.fail()
   }
@@ -178,17 +124,12 @@ pub fn with_pool_size_postgres_params_test() {
 
 pub fn with_pool_size_sqlite_test() {
   let conn =
-    SqliteConnection(
-      name: "local",
-      is_default: True,
-      database: Ok("./data.db"),
-      pool_size: Ok(5),
-    )
+    SqliteConnection(name: "local", database: Ok("./data.db"), pool_size: Ok(5))
 
   let updated = driver.with_pool_size(conn, 1)
 
   case updated {
-    SqliteConnection(_, _, _, pool_size) -> pool_size |> should.equal(Ok(1))
+    SqliteConnection(_, _, pool_size) -> pool_size |> should.equal(Ok(1))
     _ -> should.fail()
   }
 }
@@ -197,7 +138,6 @@ pub fn with_pool_size_preserves_other_fields_test() {
   let conn =
     PostgresUriConnection(
       name: "main",
-      is_default: True,
       url: Ok("postgres://localhost/db"),
       pool_size: Ok(10),
     )
@@ -206,9 +146,6 @@ pub fn with_pool_size_preserves_other_fields_test() {
 
   driver.connection_name(updated)
   |> should.equal("main")
-
-  driver.is_default(updated)
-  |> should.be_true
 }
 
 // ------------------------------------------------------------- validate
@@ -217,7 +154,6 @@ pub fn validate_postgres_uri_valid_test() {
   let conn =
     PostgresUriConnection(
       name: "main",
-      is_default: True,
       url: Ok("postgres://localhost/db"),
       pool_size: Ok(10),
     )
@@ -230,7 +166,6 @@ pub fn validate_postgres_uri_missing_url_test() {
   let conn =
     PostgresUriConnection(
       name: "main",
-      is_default: True,
       url: Error("DATABASE_URL not set"),
       pool_size: Ok(10),
     )
@@ -243,7 +178,6 @@ pub fn validate_postgres_uri_missing_pool_size_test() {
   let conn =
     PostgresUriConnection(
       name: "main",
-      is_default: True,
       url: Ok("postgres://localhost/db"),
       pool_size: Error("POOL_SIZE not set"),
     )
@@ -256,7 +190,6 @@ pub fn validate_postgres_uri_missing_both_test() {
   let conn =
     PostgresUriConnection(
       name: "main",
-      is_default: True,
       url: Error("DATABASE_URL not set"),
       pool_size: Error("POOL_SIZE not set"),
     )
@@ -270,7 +203,6 @@ pub fn validate_postgres_params_valid_test() {
   let conn =
     PostgresConnection(
       name: "main",
-      is_default: True,
       host: Ok("localhost"),
       port: Ok(5432),
       database: Ok("mydb"),
@@ -287,7 +219,6 @@ pub fn validate_postgres_params_missing_host_test() {
   let conn =
     PostgresConnection(
       name: "main",
-      is_default: True,
       host: Error("HOST not set"),
       port: Ok(5432),
       database: Ok("mydb"),
@@ -304,7 +235,6 @@ pub fn validate_postgres_params_missing_multiple_test() {
   let conn =
     PostgresConnection(
       name: "main",
-      is_default: True,
       host: Error("HOST not set"),
       port: Ok(5432),
       database: Error("DATABASE not set"),
@@ -320,12 +250,7 @@ pub fn validate_postgres_params_missing_multiple_test() {
 
 pub fn validate_sqlite_valid_test() {
   let conn =
-    SqliteConnection(
-      name: "local",
-      is_default: True,
-      database: Ok("./data.db"),
-      pool_size: Ok(5),
-    )
+    SqliteConnection(name: "local", database: Ok("./data.db"), pool_size: Ok(5))
 
   driver.validate(conn)
   |> should.equal([])
@@ -335,7 +260,6 @@ pub fn validate_sqlite_missing_database_test() {
   let conn =
     SqliteConnection(
       name: "local",
-      is_default: True,
       database: Error("DATABASE not set"),
       pool_size: Ok(5),
     )
@@ -350,13 +274,11 @@ pub fn find_by_name_found_test() {
   let connections = [
     PostgresUriConnection(
       name: "main",
-      is_default: True,
       url: Ok("postgres://localhost/db"),
       pool_size: Ok(10),
     ),
     SqliteConnection(
       name: "cache",
-      is_default: False,
       database: Ok("./cache.db"),
       pool_size: Ok(5),
     ),
@@ -375,13 +297,11 @@ pub fn find_by_name_first_in_list_test() {
   let connections = [
     PostgresUriConnection(
       name: "primary",
-      is_default: True,
       url: Ok("postgres://localhost/db"),
       pool_size: Ok(10),
     ),
     PostgresUriConnection(
       name: "secondary",
-      is_default: False,
       url: Ok("postgres://localhost/db2"),
       pool_size: Ok(5),
     ),
