@@ -35,7 +35,7 @@ fn run(args: ParsedArgs) -> Nil {
   let model_dir = "src/data/" <> connection <> "/models/" <> model_name
   let queries_dir = model_dir <> "/queries"
 
-  let assert Ok(dir_exists) = filesystem.file_exists(model_dir)
+  let assert Ok(dir_exists) = filesystem.directory_exists(model_dir)
 
   case dir_exists {
     True -> {

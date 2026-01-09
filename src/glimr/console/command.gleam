@@ -307,9 +307,11 @@ fn run(
         Command(handler:, ..) -> {
           case parse_and_validate(cmd.name, cmd.args, raw_args) {
             Ok(parsed) -> {
-              // Resolve _default to actual connection name if db option is used
-              let parsed = resolve_default_connection(parsed, connections)
-              handler(parsed)
+              // Resolve and validate connection if db option is used
+              case resolve_db_connection(parsed, connections) {
+                Ok(resolved) -> handler(resolved)
+                Error(_) -> Nil
+              }
             }
             Error(_) -> Nil
           }
@@ -343,14 +345,15 @@ fn run(
   }
 }
 
-/// Resolves _default in the database option to the actual
-/// connection name. Used by regular Command handlers that
-/// need the connection name but don't need a pool.
+/// Resolves and validates the database option. If "_default",
+/// uses the first connection. Otherwise validates the named
+/// connection exists. Returns Error and prints message if
+/// validation fails. Passes through unchanged if no db option.
 ///
-fn resolve_default_connection(
+fn resolve_db_connection(
   parsed: ParsedArgs,
   connections: List(Connection),
-) -> ParsedArgs {
+) -> Result(ParsedArgs, Nil) {
   case dict.get(parsed.options, "database") {
     Ok("_default") -> {
       case list.first(connections) {
@@ -358,12 +361,30 @@ fn resolve_default_connection(
           let actual_name = driver.connection_name(conn)
           let updated_options =
             dict.insert(parsed.options, "database", actual_name)
-          ParsedArgs(..parsed, options: updated_options)
+          Ok(ParsedArgs(..parsed, options: updated_options))
         }
-        Error(_) -> parsed
+        Error(_) -> {
+          console.output()
+          |> console.line_error("No database connections configured.")
+          |> console.print()
+          Error(Nil)
+        }
       }
     }
-    _ -> parsed
+    Ok(db_name) -> {
+      case
+        list.find(connections, fn(c) { driver.connection_name(c) == db_name })
+      {
+        Ok(_) -> Ok(parsed)
+        Error(_) -> {
+          console.output()
+          |> console.line_error("Connection not found: " <> db_name)
+          |> console.print()
+          Error(Nil)
+        }
+      }
+    }
+    Error(_) -> Ok(parsed)
   }
 }
 

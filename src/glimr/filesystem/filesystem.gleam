@@ -34,6 +34,14 @@ pub fn file_exists(path: String) -> Result(Bool, FileError) {
   simplifile.is_file(path)
 }
 
+/// Checks if a directory exists at the given path. Returns
+/// Ok(True) if the directory exists, Ok(False) if it doesn't,
+/// or Error if there was an issue checking the filesystem.
+///
+pub fn directory_exists(path: String) -> Result(Bool, FileError) {
+  simplifile.is_directory(path)
+}
+
 // ------------------------------------------------------------- Internal Public Functions
 
 /// Reads a stub template file from the framework's priv
