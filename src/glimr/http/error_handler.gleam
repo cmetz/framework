@@ -6,7 +6,7 @@
 
 import gleam/bool
 import gleam/json
-import glimr/response/view
+import glimr/response/response
 import wisp.{type Response}
 
 // ------------------------------------------------------------- Public Functions
@@ -18,20 +18,17 @@ import wisp.{type Response}
 /// implementing custom error handlers in your application.
 ///
 pub fn default_html_responses(handle_request: fn() -> Response) -> Response {
-  let response = handle_request()
+  let res = handle_request()
 
   use <- bool.guard(
-    when: response.status >= 200 && response.status < 300,
-    return: response,
+    // Return the response as is if it's not an error response.
+    when: res.status >= 200 && res.status < 300,
+    return: res,
   )
 
-  case response.status {
-    404 -> view.error_response(404, "Page Not Found")
-    405 -> view.error_response(405, "Method Not Allowed")
-    400 -> view.error_response(400, "Bad Request")
-    413 -> view.error_response(413, "Request Entity Too Large")
-    500 -> view.error_response(500, "Internal Server Error")
-    _ -> response
+  case res.status {
+    404 | 405 | 400 | 422 | 413 | 500 -> response.error(res.status)
+    _ -> res
   }
 }
 
@@ -42,39 +39,51 @@ pub fn default_html_responses(handle_request: fn() -> Response) -> Response {
 /// for API routes to ensure consistent JSON error formatting.
 ///
 pub fn default_json_responses(handle_request: fn() -> Response) -> Response {
-  let response = handle_request()
+  let res = handle_request()
 
   use <- bool.guard(
-    when: response.status >= 200 && response.status < 300,
-    return: response,
+    // Return the response as is if it's not an error response.
+    when: res.status >= 200 && res.status < 300,
+    return: res,
   )
 
-  case response.status {
+  case res.status {
     404 ->
-      json.object([#("error", json.string("Not Found"))])
-      |> json.to_string
-      |> wisp.json_body(response, _)
+      json.object([
+        #("error", json.string("Not Found")),
+      ])
+      |> response.json(res.status)
 
     405 ->
-      json.object([#("error", json.string("Method Not Allowed"))])
-      |> json.to_string
-      |> wisp.json_body(response, _)
+      json.object([
+        #("error", json.string("Method Not Allowed")),
+      ])
+      |> response.json(res.status)
 
-    400 | 422 ->
-      json.object([#("error", json.string("Bad Request"))])
-      |> json.to_string
-      |> wisp.json_body(response, _)
+    400 ->
+      json.object([
+        #("error", json.string("Bad Request")),
+      ])
+      |> response.json(res.status)
+
+    422 ->
+      json.object([
+        #("error", json.string("Bad Request")),
+      ])
+      |> response.json(res.status)
 
     413 ->
-      json.object([#("error", json.string("Request Entity Too Large"))])
-      |> json.to_string
-      |> wisp.json_body(response, _)
+      json.object([
+        #("error", json.string("Request Entity Too Large")),
+      ])
+      |> response.json(res.status)
 
     500 ->
-      json.object([#("error", json.string("Internal Server Error"))])
-      |> json.to_string
-      |> wisp.json_body(response, _)
+      json.object([
+        #("error", json.string("Internal Server Error")),
+      ])
+      |> response.json(res.status)
 
-    _ -> response
+    _ -> res
   }
 }

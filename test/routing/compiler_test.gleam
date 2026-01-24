@@ -188,7 +188,7 @@ pub fn routes() {
   |> should.be_true
 
   result.routes_code
-  |> string.contains("wisp.moved_permanently(\"/new-path\")")
+  |> string.contains("wisp.permanent_redirect(\"/new-path\")")
   |> should.be_true
 }
 

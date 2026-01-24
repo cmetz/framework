@@ -4,8 +4,11 @@
 //// access to hooks that run for commands such as `./glimr build`
 //// and `./glimr run` allowing you to extend them.
 
+import dot_env
+import dot_env/env
 import gleam/dict
 import gleam/list
+import gleam/result
 import simplifile
 import tom
 
@@ -28,8 +31,10 @@ pub type Hooks {
     build_pre: List(String),
     build_post: List(String),
     run_pre: List(String),
-    run_reload_default: List(String),
-    run_reload_routes_modified: List(String),
+    run_reload_pre: List(String),
+    run_reload_route_modified: List(String),
+    run_reload_loom_modified: List(String),
+    run_reload_post_modified: List(String),
   )
 }
 
@@ -45,6 +50,38 @@ pub fn load() -> Config {
     Ok(content) -> parse(content)
     Error(_) -> default_config()
   }
+}
+
+/// Loads environment variables from the .env file into the
+/// runtime environment. Called during application startup
+/// to make configuration values available.
+///
+@internal
+pub fn load_env() -> Nil {
+  dot_env.new()
+  |> dot_env.set_path(".env")
+  |> dot_env.set_debug(False)
+  |> dot_env.load()
+
+  Nil
+}
+
+/// Returns the application server port from environment. Reads
+/// APP_PORT from the environment and defaults to 8000 if not
+/// set or invalid.
+///
+@internal
+pub fn app_port() -> Int {
+  env.get_int("APP_PORT") |> result.unwrap(8000)
+}
+
+/// Returns the development proxy port from environment. Reads
+/// DEV_PROXY_PORT from the environment and defaults to 8001
+/// if not set or invalid.
+///
+@internal
+pub fn dev_proxy_port() -> Int {
+  env.get_int("DEV_PROXY_PORT") |> result.unwrap(8001)
 }
 
 // ------------------------------------------------------------- Private Functions
@@ -79,8 +116,10 @@ fn parse_hooks(toml: tom.Toml) -> Hooks {
     build_pre: get_string_list(build, "pre"),
     build_post: get_string_list(build, "post"),
     run_pre: get_string_list(run, "pre"),
-    run_reload_default: get_string_list(run_reload, "default"),
-    run_reload_routes_modified: get_string_list(run_reload, "routes-modified"),
+    run_reload_pre: get_string_list(run_reload, "pre"),
+    run_reload_route_modified: get_string_list(run_reload, "route-modified"),
+    run_reload_loom_modified: get_string_list(run_reload, "loom-modified"),
+    run_reload_post_modified: get_string_list(run_reload, "post-modified"),
   )
 }
 
@@ -150,7 +189,9 @@ fn default_hooks() -> Hooks {
     build_pre: [],
     build_post: [],
     run_pre: [],
-    run_reload_default: [],
-    run_reload_routes_modified: [],
+    run_reload_pre: [],
+    run_reload_route_modified: [],
+    run_reload_loom_modified: [],
+    run_reload_post_modified: [],
   )
 }

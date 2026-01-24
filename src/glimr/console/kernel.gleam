@@ -12,6 +12,7 @@ import glimr/db/db
 import glimr/db/driver.{type Connection}
 import glimr/internal/console/commands/build
 import glimr/internal/console/commands/glimr_greet
+import glimr/internal/console/commands/loom_compile
 import glimr/internal/console/commands/make_action
 import glimr/internal/console/commands/make_command
 import glimr/internal/console/commands/make_controller
@@ -34,6 +35,7 @@ pub fn commands(connections: List(Connection)) -> List(Command) {
     build.command(),
     run.command(),
     route_compile.command(),
+    loom_compile.command(),
     glimr_greet.command(),
     make_action.command(),
     make_controller.command(),

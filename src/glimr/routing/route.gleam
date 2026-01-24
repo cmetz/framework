@@ -77,19 +77,19 @@ pub fn options(path: String, _handler: a) -> Route {
 }
 
 /// Creates a temporary redirect from one path to another.
-/// Returns HTTP 302 status code indicating the resource
+/// Returns HTTP 303 status code indicating the resource
 /// has temporarily moved to the target location.
 ///
 pub fn redirect(from: String, to: String) -> Route {
-  Redirect(from: from, to: to, status: 302)
+  Redirect(from: from, to: to, status: 303)
 }
 
 /// Creates a permanent redirect from one path to another.
-/// Returns HTTP 301 status code indicating the resource
+/// Returns HTTP 308 status code indicating the resource
 /// has permanently moved to the target location.
 ///
 pub fn redirect_permanent(from: String, to: String) -> Route {
-  Redirect(from: from, to: to, status: 301)
+  Redirect(from: from, to: to, status: 308)
 }
 
 /// Attaches middleware to a route. The middleware list is

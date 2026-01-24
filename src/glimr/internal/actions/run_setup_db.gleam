@@ -1,3 +1,10 @@
+//// Database Setup
+////
+//// Creates the directory structure for a new database connection.
+//// Sets up base directory, migrations, and models subdirectories
+//// with optional SQLite database file creation.
+////
+
 import gleam/io
 import glimr/console/console
 import simplifile

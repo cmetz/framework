@@ -29,11 +29,7 @@ fn run(_args: ParsedArgs) -> Nil {
   case list.is_empty(cfg.hooks.run_pre) {
     True -> Nil
     False -> {
-      console.output()
-      |> console.unpadded()
-      |> console.blank_line(1)
-      |> console.line_warning("Running pre-run hooks...")
-      |> console.print()
+      io.println("")
     }
   }
 

@@ -196,8 +196,10 @@ pub fn has_flag(parsed: ParsedArgs, name: String) -> Bool {
 /// Returns the provided value or the option's default.
 ///
 pub fn get_option(parsed: ParsedArgs, name: String) -> String {
-  let assert Ok(value) = dict.get(parsed.options, name)
-  value
+  case dict.get(parsed.options, name) {
+    Ok(value) -> value
+    Error(_) -> ""
+  }
 }
 
 // ------------------------------------------------------------- Internal Public Functions

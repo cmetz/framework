@@ -4,7 +4,8 @@
 start_gleam_run() ->
     % Start gleam in background, wait for stdin EOF (port close), then kill process group
     % FORCE_COLOR=1 ensures colored output even when not connected to TTY
-    Cmd = "FORCE_COLOR=1 gleam run & CHILD=$!; cat >/dev/null; kill -TERM -$$ 2>/dev/null; wait $CHILD",
+    % _GLIMR_RUN=true signals to the app that it's running via ./glimr run
+    Cmd = "FORCE_COLOR=1 _GLIMR_RUN=true gleam run & CHILD=$!; cat >/dev/null; kill -TERM -$$ 2>/dev/null; wait $CHILD",
     open_port({spawn_executable, "/bin/sh"},
               [{args, ["-c", Cmd]},
                binary, stream, exit_status, use_stdio, stderr_to_stdout,

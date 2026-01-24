@@ -99,8 +99,8 @@ pub fn write_from_stub_with_variables(
   }
 }
 
-/// Replaces all {{ key }} patterns in the HTML with their values
-/// from the data dictionary. Supports both {{key}} and {{ key }}
+/// Replaces all @{{ key }} patterns in the content with their values
+/// from the data dictionary. Supports both @{{key}} and @{{ key }}
 /// syntax (with or without spaces). Strips any unused variables
 /// that weren't provided.
 ///
@@ -109,22 +109,22 @@ pub fn replace_variables(data: Dict(String, String), content: String) -> String 
   let html =
     dict.fold(data, content, fn(acc, key, value) {
       acc
-      |> string.replace("{{" <> key <> "}}", value)
-      |> string.replace("{{ " <> key <> " }}", value)
-      |> string.replace("{{ " <> key <> "}}", value)
-      |> string.replace("{{" <> key <> " }}", value)
+      |> string.replace("@{{" <> key <> "}}", value)
+      |> string.replace("@{{ " <> key <> " }}", value)
+      |> string.replace("@{{ " <> key <> "}}", value)
+      |> string.replace("@{{" <> key <> " }}", value)
     })
 
   strip_unused_variables(html)
 }
 
-/// Recursively removes all {{variable}} patterns that weren't
+/// Recursively removes all @{{variable}} patterns that weren't
 /// replaced by template data. This prevents showing placeholder
 /// text in the rendered output.
 ///
 @internal
 pub fn strip_unused_variables(content: String) -> String {
-  case string.split_once(content, "{{") {
+  case string.split_once(content, "@{{") {
     Ok(#(before, after)) -> {
       case string.split_once(after, "}}") {
         Ok(#(_, rest)) -> before <> strip_unused_variables(rest)

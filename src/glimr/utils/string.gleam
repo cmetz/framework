@@ -15,10 +15,10 @@ import gleam/string
 /// *Example:*
 ///
 /// ```gleam
-/// pluralize("user")     // => "users"
-/// pluralize("category") // => "categories"
-/// pluralize("box")      // => "boxes"
-/// pluralize("match")    // => "matches"
+/// string.pluralize("user")     // => "users"
+/// string.pluralize("category") // => "categories"
+/// string.pluralize("box")      // => "boxes"
+/// string.pluralize("match")    // => "matches"
 /// ```
 ///
 pub fn pluralize(word: String) -> String {
@@ -46,4 +46,22 @@ pub fn pluralize(word: String) -> String {
       }
     }
   }
+}
+
+/// Checks if a character is alphanumeric or underscore. Returns
+/// true for letters a-z, A-Z, digits 0-9, and underscore. Used
+/// for validating identifier characters.
+///
+/// *Example:*
+///
+/// ```gleam
+/// string.is_alphanumeric("A") // True
+/// string.is_alphanumeric(":") // False
+/// ```
+///
+pub fn is_alphanumeric(char: String) -> Bool {
+  string.contains(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+    char,
+  )
 }

@@ -5,7 +5,7 @@ import glimr_postgres/db/pool.{type Pool}
 // docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#console-commands
 
 /// The name of the console command.
-const name = "app:{{ command_name }}"
+const name = "app:@{{ command_name }}"
 
 /// The console command description.
 const description = "Command description"

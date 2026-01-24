@@ -1,3 +1,10 @@
+//// Build Runner
+////
+//// Executes the Gleam build command and formats output.
+//// Provides consistent build feedback with success and
+//// error messages.
+////
+
 import glimr/console/console
 import shellout
 
@@ -7,8 +14,6 @@ import shellout
 ///
 pub fn run() -> Result(Nil, String) {
   console.output()
-  |> console.unpadded()
-  |> console.blank_line(1)
   |> console.line_warning("Building application...")
   |> console.print()
 

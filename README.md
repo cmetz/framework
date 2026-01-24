@@ -11,13 +11,13 @@ If you'd like to stay updated on Glimr's development, Follow [@migueljarias](htt
 ## Features
 
 - **Type Safe Routing** - Pattern matching routes with compile-time type safety
-- **View Builder** - Fluent API for rendering HTML and Lustre components with layouts
+- **View Builder** - Fluent API for rendering HTML
+- **Loom Template Engine** - Blade-inspired templates with components, slots, and conditionals
 - **Template Engine** - Simple `{{ variable }}` syntax for dynamic content
 - **Redirect Builder** - Clean redirect API with flash message support
 - **Middleware System** - Composable middleware at route and group levels
 - **Middleware Groups** - Pre-configured middleware stacks for different route types (Web, API, Custom)
 - **Form Validation** - Elegant form validation layer to easily validate requests
-- **Lustre Integration** - Server-side rendering of Lustre components
 - **Automatic Migrations** - Schema-based migration generation with snapshot diffing
 - **SQL Queries** - Write raw SQL files with full editor LSP support, compiled to typed Gleam functions
 - **Connection Pooling** - Efficient database connection management for PostgreSQL and SQLite

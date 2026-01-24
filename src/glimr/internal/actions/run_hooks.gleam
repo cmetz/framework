@@ -1,3 +1,10 @@
+//// Hook Runner
+////
+//// Executes hook commands configured in the Glimr project.
+//// Supports both internal Glimr commands and external shell
+//// commands with file path substitution.
+////
+
 import gleam/dict
 import gleam/io
 import gleam/list
@@ -11,6 +18,27 @@ import shellout
 ///
 pub fn run(hooks: List(String)) -> Result(Nil, String) {
   run_hooks(hooks)
+}
+
+/// Runs hooks for each file, substituting $PATH with the file
+/// path. Processes files sequentially, stopping on the first
+/// error encountered.
+///
+pub fn run_for_files(
+  hooks: List(String),
+  files: List(String),
+) -> Result(Nil, String) {
+  case files {
+    [] -> Ok(Nil)
+    [file, ..rest] -> {
+      let substituted_hooks =
+        list.map(hooks, fn(hook) { string.replace(hook, "$PATH", file) })
+      case run_hooks(substituted_hooks) {
+        Ok(_) -> run_for_files(hooks, rest)
+        Error(e) -> Error(e)
+      }
+    }
+  }
 }
 
 /// Recursive helper that processes hooks one at a time. Returns
@@ -45,13 +73,21 @@ fn run_hook(cmd: String) -> Result(Nil, String) {
 /// Falls back to external execution for database commands.
 ///
 fn run_internal_command(cmd: String) -> Result(Nil, String) {
-  let name = string.drop_start(cmd, 8) |> string.trim()
+  let parts =
+    cmd
+    |> string.drop_start(8)
+    |> string.trim()
+    |> string.split(" ")
+
+  let name = list.first(parts) |> unwrap_or("")
+  let args = list.drop(parts, 1)
+  let options = parse_options(args)
   let commands = command.get_commands()
 
   case find_command(commands, name) {
     Ok(Command(handler:, ..)) -> {
-      let empty_args = ParsedArgs(dict.new(), [], dict.new())
-      handler(empty_args)
+      let parsed_args = ParsedArgs(dict.new(), [], options)
+      handler(parsed_args)
       Ok(Nil)
     }
     Ok(_) -> {
@@ -61,6 +97,38 @@ fn run_internal_command(cmd: String) -> Result(Nil, String) {
     Error(_) -> {
       Error("Unknown command: " <> name)
     }
+  }
+}
+
+/// Parses command line options from argument list. Extracts
+/// --key=value pairs and returns them as a dictionary,
+/// ignoring non-option arguments.
+///
+fn parse_options(args: List(String)) -> dict.Dict(String, String) {
+  args
+  |> list.filter_map(fn(arg) {
+    case string.starts_with(arg, "--") {
+      True -> {
+        let without_dashes = string.drop_start(arg, 2)
+        case string.split_once(without_dashes, "=") {
+          Ok(#(key, value)) -> Ok(#(key, value))
+          Error(_) -> Error(Nil)
+        }
+      }
+      False -> Error(Nil)
+    }
+  })
+  |> dict.from_list
+}
+
+/// Unwraps a Result, returning the Ok value or a default.
+/// Provides a fallback value when the result contains an
+/// error instead of a valid value.
+///
+fn unwrap_or(result: Result(a, e), default: a) -> a {
+  case result {
+    Ok(value) -> value
+    Error(_) -> default
   }
 }
 
