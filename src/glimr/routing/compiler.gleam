@@ -926,7 +926,7 @@ fn generate_handler_call(
   middleware: List(String),
 ) -> String {
   let call = case string.starts_with(handler, "fn") {
-    True -> generate_anon_fn_call(handler, params)
+    True -> generate_anon_fn_call(handler)
     False -> {
       let args = ["req", "ctx"] |> list.append(params) |> string.join(", ")
       handler <> "(" <> args <> ")"
@@ -963,10 +963,11 @@ fn generate_handler_call(
 
 /// Generates a call to an anonymous function handler. Wraps
 /// the function definition in braces and passes appropriate
-/// arguments.
+/// arguments. Matches path params to function params by name.
 ///
-fn generate_anon_fn_call(handler: String, params: List(String)) -> String {
+fn generate_anon_fn_call(handler: String) -> String {
   let fn_params = extract_fn_params(handler)
+  let fn_param_names = list.map(fn_params, extract_param_name_from_signature)
   let param_count = list.length(fn_params)
 
   let args = case param_count {
@@ -974,12 +975,26 @@ fn generate_anon_fn_call(handler: String, params: List(String)) -> String {
     1 -> "req"
     2 -> "req, ctx"
     _ -> {
+      // Get function's path param names (skip req, ctx)
+      let fn_path_params = list.drop(fn_param_names, 2)
       let base = ["req", "ctx"]
-      base |> list.append(params) |> string.join(", ")
+      base |> list.append(fn_path_params) |> string.join(", ")
     }
   }
 
   "{ " <> handler <> " }(" <> args <> ")"
+}
+
+/// Extracts the parameter name from a signature string.
+/// Handles both typed params like "id: String" and untyped
+/// params like "id".
+///
+fn extract_param_name_from_signature(param: String) -> String {
+  let trimmed = string.trim(param)
+  case string.split_once(trimmed, ":") {
+    Ok(#(name, _)) -> string.trim(name)
+    Error(_) -> trimmed
+  }
 }
 
 /// Extracts parameter names from an anonymous function.
