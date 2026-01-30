@@ -13,7 +13,8 @@ import gleam/regexp
 import gleam/result
 import gleam/string
 import glimr/routing/annotation_parser.{
-  type ParseResult, type ParsedRoute, ParsedRedirect, ParsedRoute,
+  type FunctionParam, type ParseResult, type ParsedRoute, ParsedRedirect,
+  ParsedRoute,
 }
 import shellout
 import simplifile
@@ -33,14 +34,16 @@ const middleware_base_path = "app/http/middleware/"
 const validator_base_path = "app/http/validators/"
 
 /// Expands a bare middleware name to its full module path.
-/// "logger" becomes "app/http/middleware/logger".
+/// Prepends the middleware base path to the given name.
+/// Example: "logger" becomes "app/http/middleware/logger".
 ///
 fn expand_middleware_path(name: String) -> String {
   middleware_base_path <> name
 }
 
 /// Expands a bare validator name to its full module path.
-/// "user_validator" becomes "app/http/validators/user_validator".
+/// Prepends the validator base path to the given name.
+/// Example: "user" becomes "app/http/validators/user".
 ///
 fn expand_validator_path(name: String) -> String {
   validator_base_path <> name
@@ -58,6 +61,8 @@ pub type CompileResult {
     routes_code: String,
     used_methods: List(String),
     uses_middleware: Bool,
+    uses_req: Bool,
+    uses_ctx: Bool,
     line_to_route: Dict(Int, String),
   )
 }
@@ -91,10 +96,13 @@ pub fn compile_routes(
   use _ <- result.try(validate_group_middleware(controller_results))
   use _ <- result.try(validate_route_middleware(controller_results))
   use _ <- result.try(validate_validators(controller_results))
+  use _ <- result.try(validate_handler_params(routes))
 
   let imports = generate_imports(controller_routes, routes)
   let used_methods = collect_used_methods(routes)
   let uses_middleware = check_uses_middleware(routes)
+  let uses_req = check_uses_request(routes)
+  let uses_ctx = check_uses_context(routes)
 
   let #(routes_code, line_to_route) =
     generate_code(
@@ -109,6 +117,8 @@ pub fn compile_routes(
     routes_code:,
     used_methods:,
     uses_middleware:,
+    uses_req:,
+    uses_ctx:,
     line_to_route:,
   ))
 }
@@ -142,13 +152,14 @@ fn prefix_handler(route: ParsedRoute, module_path: String) -> ParsedRoute {
   let alias = controller_alias(module_path)
 
   case route {
-    ParsedRoute(method:, path:, handler:, middleware:, validator:) ->
+    ParsedRoute(method:, path:, handler:, middleware:, validator:, params:) ->
       ParsedRoute(
         method:,
         path:,
         handler: alias <> "." <> handler,
         middleware:,
         validator:,
+        params:,
       )
     ParsedRedirect(..) -> route
   }
@@ -213,6 +224,32 @@ fn check_uses_middleware(routes: List(ParsedRoute)) -> Bool {
   list.any(routes, fn(r) {
     case r {
       ParsedRoute(middleware:, ..) -> middleware != []
+      ParsedRedirect(..) -> False
+    }
+  })
+}
+
+/// Checks if any route handler uses a Request parameter.
+/// Used to determine whether to use `req` or `_req` in the
+/// generated routes function signature.
+///
+fn check_uses_request(routes: List(ParsedRoute)) -> Bool {
+  list.any(routes, fn(r) {
+    case r {
+      ParsedRoute(params:, ..) -> list.any(params, is_request_param)
+      ParsedRedirect(..) -> False
+    }
+  })
+}
+
+/// Checks if any route handler uses a Context parameter.
+/// Used to determine whether to use `ctx` or `_ctx` in the
+/// generated routes function signature.
+///
+fn check_uses_context(routes: List(ParsedRoute)) -> Bool {
+  list.any(routes, fn(r) {
+    case r {
+      ParsedRoute(params:, ..) -> list.any(params, is_context_param)
       ParsedRedirect(..) -> False
     }
   })
@@ -542,6 +579,201 @@ fn validate_validators(
   }
 }
 
+/// Validates that handler function parameters match route 
+/// definition. Checks: route params have matching function 
+/// params, no extra params, and validator Data param is present 
+/// when @validator is used.
+///
+fn validate_handler_params(routes: List(ParsedRoute)) -> Result(Nil, String) {
+  let errors =
+    routes
+    |> list.filter_map(fn(r) {
+      case r {
+        ParsedRoute(path:, handler:, validator:, params:, ..) -> {
+          let route_params = extract_params_from_path(path)
+          check_handler_params(path, handler, route_params, params, validator)
+        }
+        ParsedRedirect(..) -> Error(Nil)
+      }
+    })
+
+  case errors {
+    [] -> Ok(Nil)
+    [err, ..] -> Error(err)
+  }
+}
+
+/// Checks a single handler's parameters for validity. Verifies
+/// route params match function params and validates Data param
+/// presence when using @validator. Returns error if invalid.
+///
+fn check_handler_params(
+  path: String,
+  handler: String,
+  route_params: List(String),
+  fn_params: List(FunctionParam),
+  validator: option.Option(String),
+) -> Result(String, Nil) {
+  // First check for req/ctx params without type annotations
+  let untyped_req_ctx =
+    list.find(fn_params, fn(p) {
+      let name = string.lowercase(p.name)
+      let is_req_or_ctx =
+        name == "req" || name == "_req" || name == "ctx" || name == "_ctx"
+      is_req_or_ctx && p.param_type == ""
+    })
+
+  case untyped_req_ctx {
+    Ok(param) -> {
+      let expected_type = case string.lowercase(param.name) {
+        "req" | "_req" -> "Request"
+        _ -> "Context"
+      }
+      Ok(
+        "Handler "
+        <> handler
+        <> " has parameter '"
+        <> param.name
+        <> "' without a type annotation\n"
+        <> "Please specify the type: "
+        <> param.name
+        <> ": "
+        <> expected_type,
+      )
+    }
+    Error(_) -> {
+      // Get non-special params (not Request, Context, or Data)
+      let handler_route_params = get_route_param_names(fn_params, validator)
+
+      // Check for missing route params (route has :id but handler doesn't have id)
+      let missing =
+        list.filter(route_params, fn(rp) {
+          !list.contains(handler_route_params, rp)
+        })
+
+      case missing {
+        [param, ..] ->
+          Ok(
+            "Route '"
+            <> path
+            <> "' defines :"
+            <> param
+            <> " but handler "
+            <> handler
+            <> " has no matching parameter",
+          )
+        [] -> {
+          // Check for extra handler params (handler has 'name' but route has no :name)
+          let extra_params =
+            list.filter(fn_params, fn(p) {
+              let clean_name = case string.starts_with(p.name, "_") {
+                True -> string.drop_start(p.name, 1)
+                False -> p.name
+              }
+              !is_request_param(p)
+              && !is_context_param(p)
+              && !is_validator_data_param(p, validator)
+              && !list.contains(route_params, clean_name)
+            })
+
+          case extra_params {
+            [param, ..] -> {
+              let clean_name = case string.starts_with(param.name, "_") {
+                True -> string.drop_start(param.name, 1)
+                False -> param.name
+              }
+              let base_error =
+                "Handler "
+                <> handler
+                <> " has parameter '"
+                <> clean_name
+                <> "' but route '"
+                <> path
+                <> "' has no matching segment"
+
+              // Add hint for validated/data params
+              let lower_name = string.lowercase(clean_name)
+              let hint = case lower_name, validator {
+                "validated", option.Some(v) | "data", option.Some(v) -> {
+                  let validator_name = case string.split(v, "/") |> list.last {
+                    Ok(name) -> name
+                    Error(_) -> v
+                  }
+                  "\nIf this is meant to be validated data, specify the type: "
+                  <> param.name
+                  <> ": "
+                  <> validator_name
+                  <> ".Data"
+                }
+                _, _ -> ""
+              }
+
+              Ok(base_error <> hint)
+            }
+            [] -> {
+              // Check for missing validator Data param
+              case validator {
+                option.Some(v) -> {
+                  case has_validator_data_param(fn_params, v) {
+                    True -> Error(Nil)
+                    False ->
+                      Ok(
+                        "Route '"
+                        <> path
+                        <> "' uses @validator \""
+                        <> v
+                        <> "\" but handler "
+                        <> handler
+                        <> " has no Data parameter",
+                      )
+                  }
+                }
+                option.None -> Error(Nil)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Extracts route parameter names from function params. Filters
+/// out Request, Context, and validator Data params, returning
+/// only the route path parameter names.
+///
+fn get_route_param_names(
+  fn_params: List(FunctionParam),
+  validator: option.Option(String),
+) -> List(String) {
+  fn_params
+  |> list.filter(fn(p) {
+    !is_request_param(p)
+    && !is_context_param(p)
+    && !is_validator_data_param(p, validator)
+  })
+  |> list.map(fn(p) {
+    // Strip leading underscore if present
+    case string.starts_with(p.name, "_") {
+      True -> string.drop_start(p.name, 1)
+      False -> p.name
+    }
+  })
+}
+
+/// Checks if function params include a validator Data parameter.
+/// Used to verify handlers with @validator have the required
+/// Data param for receiving validated form data.
+///
+fn has_validator_data_param(
+  fn_params: List(FunctionParam),
+  validator: String,
+) -> Bool {
+  list.any(fn_params, fn(p) {
+    is_validator_data_param(p, option.Some(validator))
+  })
+}
+
 /// Collects unique HTTP methods used across all routes.
 /// Returns capitalized method names for use in the http
 /// import statement.
@@ -746,19 +978,31 @@ fn generate_method_cases(routes: List(ParsedRoute)) -> String {
       let method_routes =
         list.filter_map(routes, fn(r) {
           case r {
-            ParsedRoute(method:, path:, handler:, middleware:, validator:) ->
-              Ok(#(method, path, handler, middleware, validator))
+            ParsedRoute(
+              method:,
+              path:,
+              handler:,
+              middleware:,
+              validator:,
+              params:,
+            ) -> Ok(#(method, path, handler, middleware, validator, params))
             ParsedRedirect(..) -> Error(Nil)
           }
         })
 
       case method_routes {
         [] -> "      wisp.not_found()"
-        [#(method, path, handler, middleware, validator)] -> {
+        [#(method, path, handler, middleware, validator, fn_params)] -> {
           let method_upper = string.capitalise(method)
-          let params = extract_params_from_path(path)
+          let route_params = extract_params_from_path(path)
           let handler_call =
-            generate_handler_call(handler, params, middleware, validator)
+            generate_handler_call(
+              handler,
+              route_params,
+              fn_params,
+              middleware,
+              validator,
+            )
           "      case method {\n        "
           <> method_upper
           <> " -> "
@@ -774,11 +1018,17 @@ fn generate_method_cases(routes: List(ParsedRoute)) -> String {
 
           let cases =
             list.map(method_routes, fn(r) {
-              let #(method, path, handler, middleware, validator) = r
+              let #(method, path, handler, middleware, validator, fn_params) = r
               let method_upper = string.capitalise(method)
-              let params = extract_params_from_path(path)
+              let route_params = extract_params_from_path(path)
               let handler_call =
-                generate_handler_call(handler, params, middleware, validator)
+                generate_handler_call(
+                  handler,
+                  route_params,
+                  fn_params,
+                  middleware,
+                  validator,
+                )
               "        " <> method_upper <> " -> " <> handler_call
             })
             |> string.join("\n")
@@ -806,20 +1056,17 @@ fn extract_params_from_path(path: String) -> List(String) {
 
 /// Generates the handler function call. Handles middleware
 /// and validator wrapping, passes appropriate arguments based
-/// on handler type.
+/// on handler function signature order.
 ///
 fn generate_handler_call(
   handler: String,
-  params: List(String),
+  route_params: List(String),
+  fn_params: List(FunctionParam),
   middleware: List(String),
   validator: option.Option(String),
 ) -> String {
-  // Build args: req, ctx, ...path_params, [validated]
-  let base_args = ["req", "ctx"] |> list.append(params)
-  let args = case validator {
-    option.Some(_) -> list.append(base_args, ["validated"])
-    option.None -> base_args
-  }
+  // Build args based on function signature order
+  let args = build_handler_args(fn_params, route_params, validator)
   let call = handler <> "(" <> string.join(args, ", ") <> ")"
 
   // Wrap with validator if present
@@ -853,6 +1100,91 @@ fn generate_handler_call(
       <> with_validator
       <> "\n        }"
     }
+  }
+}
+
+/// Builds handler arguments based on function signature order.
+/// Maps each function param to its corresponding value based on
+/// param's type (Request/Context/Data) or name for route params.
+///
+fn build_handler_args(
+  fn_params: List(FunctionParam),
+  route_params: List(String),
+  validator: option.Option(String),
+) -> List(String) {
+  list.map(fn_params, fn(param) { param_to_arg(param, route_params, validator) })
+}
+
+/// Converts a function parameter to its corresponding argument.
+/// Uses type matching for Request/Context/Data params, and
+/// name matching for route path parameters.
+///
+fn param_to_arg(
+  param: FunctionParam,
+  _route_params: List(String),
+  validator: option.Option(String),
+) -> String {
+  let clean_name = case string.starts_with(param.name, "_") {
+    True -> string.drop_start(param.name, 1)
+    False -> param.name
+  }
+
+  // Check if it's a Request param
+  case is_request_param(param) {
+    True -> "req"
+    False -> {
+      // Check if it's a Context param
+      case is_context_param(param) {
+        True -> "ctx"
+        False -> {
+          // Check if it's validator Data param
+          case is_validator_data_param(param, validator) {
+            True -> "validated"
+            False -> {
+              // Must be a route param - use the clean name
+              clean_name
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Checks if a param is the Request type. Identifies handler
+/// params that should receive the request object.
+/// Matches type names: Request, wisp.Request.
+///
+fn is_request_param(param: FunctionParam) -> Bool {
+  param.param_type == "Request" || param.param_type == "wisp.Request"
+}
+
+/// Checks if a param is the Context type. Identifies handler
+/// params that should receive the application context.
+/// Matches type names: Context, ctx.Context.
+///
+fn is_context_param(param: FunctionParam) -> Bool {
+  param.param_type == "Context" || param.param_type == "ctx.Context"
+}
+
+/// Checks if a param is the validator Data type. Identifies
+/// handler params that receive validated form data.
+/// Matches type names: Data, {validator_name}.Data.
+///
+fn is_validator_data_param(
+  param: FunctionParam,
+  validator: option.Option(String),
+) -> Bool {
+  case validator {
+    option.Some(v) -> {
+      let validator_name = case string.split(v, "/") |> list.last {
+        Ok(name) -> name
+        Error(_) -> v
+      }
+      param.param_type == "Data"
+      || param.param_type == validator_name <> ".Data"
+    }
+    option.None -> False
   }
 }
 
@@ -922,8 +1254,16 @@ pub fn write_compiled_file(
     False -> ""
   }
 
+  let req_arg = case compile_result.uses_req {
+    True -> "req"
+    False -> "_req"
+  }
+  let ctx_arg = case compile_result.uses_ctx {
+    True -> "ctx"
+    False -> "_ctx"
+  }
   let fn_args = case has_routes {
-    True -> "path, method, req, ctx"
+    True -> "path, method, " <> req_arg <> ", " <> ctx_arg
     False -> "path, _method, _req, _ctx"
   }
 

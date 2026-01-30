@@ -11,6 +11,14 @@ import gleam/string
 
 // ------------------------------------------------------------- Public Types
 
+/// Represents a function parameter with its name and type.
+/// This is used to track handler signature for flexible 
+/// parameter ordering.
+///
+pub type FunctionParam {
+  FunctionParam(name: String, param_type: String)
+}
+
 /// Represents a parsed route from controller annotations.
 /// Contains method, path, handler function name, middleware,
 /// optional validator, and optional redirect configuration.
@@ -22,6 +30,7 @@ pub type ParsedRoute {
     handler: String,
     middleware: List(String),
     validator: Option(String),
+    params: List(FunctionParam),
   )
   ParsedRedirect(from: String, to: String, status: Int)
 }
@@ -154,10 +163,19 @@ fn parse_lines(
               case current {
                 Some(state) -> {
                   let fn_name = extract_fn_name(trimmed)
+                  // Collect full signature (may span multiple lines)
+                  let #(signature, remaining) =
+                    collect_signature(line, rest, "")
+                  let params = extract_fn_params(signature)
                   let new_routes =
-                    create_routes_from_state(state, fn_name, group_middleware)
+                    create_routes_from_state(
+                      state,
+                      fn_name,
+                      params,
+                      group_middleware,
+                    )
                   parse_lines(
-                    rest,
+                    remaining,
                     group_middleware,
                     None,
                     list.append(list.reverse(new_routes), acc),
@@ -176,6 +194,29 @@ fn parse_lines(
             }
           }
         }
+      }
+    }
+  }
+}
+
+/// Collects the full function signature which may span multiple 
+/// lines. Continues reading until the closing brace { is found
+/// indicating the end of of the function signature.
+///
+fn collect_signature(
+  current_line: String,
+  remaining: List(String),
+  acc: String,
+) -> #(String, List(String)) {
+  let new_acc = acc <> " " <> string.trim(current_line)
+
+  // Check if we have the complete signature (contains the opening brace)
+  case string.contains(new_acc, "{") {
+    True -> #(new_acc, remaining)
+    False -> {
+      case remaining {
+        [] -> #(new_acc, [])
+        [next, ..rest] -> collect_signature(next, rest, new_acc)
       }
     }
   }
@@ -283,6 +324,103 @@ fn extract_fn_name(line: String) -> String {
   }
 }
 
+/// Extracts function parameters from a function signature.
+/// Parses `pub fn name(param1: Type1, param2: Type2) -> ReturnType`
+/// and returns a list of FunctionParam with name and type.
+///
+fn extract_fn_params(signature: String) -> List(FunctionParam) {
+  // Extract content between first ( and last ) before ->
+  case string.split_once(signature, "(") {
+    Ok(#(_, after_paren)) -> {
+      // Find the closing paren - need to handle nested types like Option(String)
+      let params_str = extract_params_string(after_paren, 0, "")
+      parse_params_string(params_str)
+    }
+    Error(_) -> []
+  }
+}
+
+/// Extracts the parameters string by finding matching closing
+/// paren. Handles nested parentheses in types like 
+/// Option(String). Returns the accumulated string up to the 
+/// matching close paren.
+///
+fn extract_params_string(s: String, depth: Int, acc: String) -> String {
+  case string.pop_grapheme(s) {
+    Ok(#("(", rest)) -> extract_params_string(rest, depth + 1, acc <> "(")
+    Ok(#(")", rest)) -> {
+      case depth {
+        0 -> acc
+        _ -> extract_params_string(rest, depth - 1, acc <> ")")
+      }
+    }
+    Ok(#(char, rest)) -> extract_params_string(rest, depth, acc <> char)
+    Error(_) -> acc
+  }
+}
+
+/// Parses a comma-separated parameter string into 
+/// FunctionParams. Handles types with commas in generics like 
+/// Dict(String, Int). Filters out empty parameter strings from 
+/// the result.
+///
+fn parse_params_string(params_str: String) -> List(FunctionParam) {
+  split_params(params_str, 0, "", [])
+  |> list.filter_map(fn(param_str) {
+    let trimmed = string.trim(param_str)
+    case trimmed {
+      "" -> Error(Nil)
+      _ -> parse_single_param(trimmed)
+    }
+  })
+}
+
+/// Splits parameters by comma, respecting nested parentheses.
+/// Only splits on commas at depth zero to preserve generic types.
+/// Example: "a: Int, b: Option(String)" -> ["a: Int", "b: ..."]
+///
+fn split_params(
+  s: String,
+  depth: Int,
+  current: String,
+  acc: List(String),
+) -> List(String) {
+  case string.pop_grapheme(s) {
+    Ok(#("(", rest)) -> split_params(rest, depth + 1, current <> "(", acc)
+    Ok(#(")", rest)) -> split_params(rest, depth - 1, current <> ")", acc)
+    Ok(#(",", rest)) -> {
+      case depth {
+        0 -> split_params(rest, 0, "", [current, ..acc])
+        _ -> split_params(rest, depth, current <> ",", acc)
+      }
+    }
+    Ok(#(char, rest)) -> split_params(rest, depth, current <> char, acc)
+    Error(_) -> list.reverse([current, ..acc])
+  }
+}
+
+/// Parses a single parameter like "name: Type" or "_name: Type".
+/// Returns the parameter name and type as a FunctionParam 
+/// record. Returns Error for empty parameter strings.
+///
+fn parse_single_param(param: String) -> Result(FunctionParam, Nil) {
+  case string.split_once(param, ":") {
+    Ok(#(name, type_str)) -> {
+      let clean_name = string.trim(name)
+      let clean_type = string.trim(type_str)
+      Ok(FunctionParam(name: clean_name, param_type: clean_type))
+    }
+    Error(_) -> {
+      // No type annotation - just a param name
+      let clean_name = string.trim(param)
+      case clean_name {
+        "" -> Error(Nil)
+        _ -> Ok(FunctionParam(name: clean_name, param_type: ""))
+      }
+    }
+  }
+}
+
 /// Creates routes from accumulated annotation state. Generates
 /// the main route and any redirect routes pointing to it.
 /// Combines group middleware with route-specific middleware.
@@ -290,6 +428,7 @@ fn extract_fn_name(line: String) -> String {
 fn create_routes_from_state(
   state: AnnotationState,
   fn_name: String,
+  params: List(FunctionParam),
   group_middleware: List(String),
 ) -> List(ParsedRoute) {
   case state.method, state.path {
@@ -302,6 +441,7 @@ fn create_routes_from_state(
           handler: fn_name,
           middleware: all_middleware,
           validator: state.validator,
+          params:,
         )
 
       // Create redirect routes
