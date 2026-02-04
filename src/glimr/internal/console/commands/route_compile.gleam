@@ -1,5 +1,5 @@
 import gleam/io
-import glimr/console/command.{type Command, type Args, Flag}
+import glimr/console/command.{type Args, type Command, Flag}
 import glimr/console/console
 import glimr/internal/actions/compile_routes
 

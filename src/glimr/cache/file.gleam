@@ -1,18 +1,22 @@
 //// File Cache Entry Point
 ////
-//// Provides the main entry point for starting file cache pools
-//// from configured cache stores.
+//// Single entry point for file-based caching so application code
+//// doesn't need to know about config loading or pool management.
+//// Keeps cache setup to one line in application supervisors.
+////
 
-import glimr/cache/driver.{type CacheStore}
+import glimr/cache/driver
 import glimr/cache/file/pool.{type Pool}
+import glimr/config/cache
 
 // ------------------------------------------------------------- Public Functions
 
-/// Starts a file cache pool by name from a list of cache stores.
-/// Panics if the store is not found or is not a FileStore.
-/// Returns a pool handle for cache operations.
+/// Looks up the named store in config/cache.toml and starts a
+/// pool for it. Panics on missing/invalid config to fail fast
+/// during app startup rather than silently degrading later.
 ///
-pub fn start(name: String, stores: List(CacheStore)) -> Pool {
+pub fn start(name: String) -> Pool {
+  let stores = cache.load()
   let store = driver.find_by_name(name, stores)
   pool.start_pool(store)
 }

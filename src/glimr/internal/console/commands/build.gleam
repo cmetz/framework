@@ -1,6 +1,6 @@
 import gleam/io
 import gleam/list
-import glimr/console/command.{type Command, type Args}
+import glimr/console/command.{type Args, type Command}
 import glimr/console/console
 import glimr/internal/actions/run_build
 import glimr/internal/actions/run_hooks

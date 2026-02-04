@@ -1,6 +1,6 @@
 import gleam/io
 import gleam/string
-import glimr/console/command.{type Command, type Args, Flag, Option}
+import glimr/console/command.{type Args, type Command, Flag, Option}
 import glimr/console/console
 import glimr/internal/actions/compile_loom
 

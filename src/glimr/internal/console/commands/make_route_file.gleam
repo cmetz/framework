@@ -1,5 +1,5 @@
 import gleam/string
-import glimr/console/command.{type Command, type Args, Argument, Flag}
+import glimr/console/command.{type Args, type Command, Argument, Flag}
 import glimr/console/console
 import glimr/filesystem/filesystem
 

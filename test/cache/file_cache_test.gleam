@@ -3,25 +3,42 @@ import gleam/json
 import gleam/string
 import gleeunit/should
 import glimr/cache/cache.{ComputeError, NotFound, SerializationError}
-import glimr/cache/driver.{FileStore}
 import glimr/cache/file
 import glimr/cache/file/cache as file_cache
 import simplifile
 
 const test_cache_path = "priv/test/cache"
 
+const config_dir = "config"
+
+const config_file = "config/cache.toml"
+
+fn setup_config() -> Nil {
+  let _ = simplifile.create_directory_all(config_dir)
+  let _ = simplifile.write(config_file, "[stores.test]
+  driver = \"file\"
+  path = \"" <> test_cache_path <> "\"
+")
+  Nil
+}
+
+fn cleanup_config() -> Nil {
+  let _ = simplifile.delete(config_file)
+  Nil
+}
+
 fn setup_test_pool() {
   // Clean up any existing test cache
   let _ = simplifile.delete(test_cache_path)
   let _ = simplifile.create_directory_all(test_cache_path)
 
-  let store = FileStore(name: "test", path: test_cache_path)
-  file.start("test", [store])
+  setup_config()
+  file.start("test")
 }
 
 fn cleanup_test_pool() {
   let _ = simplifile.delete(test_cache_path)
-  Nil
+  cleanup_config()
 }
 
 // ------------------------------------------------------------- get/put

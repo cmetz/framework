@@ -5,7 +5,6 @@
 //// Glimr's default console commands.
 
 import gleam/list
-import glimr/cache/driver.{type CacheStore} as _cache_driver
 import glimr/console/command.{type Command}
 import glimr/console/console
 import glimr/internal/console/commands/build
@@ -48,13 +47,10 @@ pub fn commands() -> List(Command) {
 
 /// Entry point for running console commands. Merges internal
 /// Glimr commands with user-defined commands into a single
-/// list. Commands receive the user's context and can decode
-/// GlimrContext from it if needed.
+/// list. Cache and database config are loaded from TOML files
+/// as needed by individual commands.
 ///
-pub fn run(
-  commands app_commands: List(Command),
-  cache_stores cache_stores: List(CacheStore),
-) {
+pub fn run(commands app_commands: List(Command)) {
   let commands = list.append(commands(), app_commands)
   command.store_commands(commands)
 
@@ -64,7 +60,7 @@ pub fn run(
     [] -> command.print_help(commands)
     ["-V"] | ["--version"] -> command.print_glimr_version()
     [name, ..rest] -> {
-      case command.find_and_run(commands, cache_stores, name, rest) {
+      case command.find_and_run(commands, name, rest) {
         True -> Nil
         False -> {
           console.output()

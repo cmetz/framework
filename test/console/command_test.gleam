@@ -1,6 +1,6 @@
 import gleam/dict
 import gleeunit/should
-import glimr/console/command.{Argument, Command, Flag, Args}
+import glimr/console/command.{Args, Argument, Command, Flag}
 
 // ------------------------------------------------------------- Command Creation
 
@@ -83,11 +83,7 @@ pub fn has_flag_returns_true_when_present_test() {
 
 pub fn has_flag_returns_false_when_not_present_test() {
   let parsed =
-    Args(
-      arguments: dict.from_list([]),
-      flags: ["verbose"],
-      options: dict.new(),
-    )
+    Args(arguments: dict.from_list([]), flags: ["verbose"], options: dict.new())
 
   command.has_flag(parsed, "quiet")
   |> should.equal(False)

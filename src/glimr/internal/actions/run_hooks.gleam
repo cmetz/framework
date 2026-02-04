@@ -9,7 +9,7 @@ import gleam/dict
 import gleam/io
 import gleam/list
 import gleam/string
-import glimr/console/command.{type Command, Command, Args}
+import glimr/console/command.{type Command, Args, Command}
 import shellout
 
 /// Runs a list of hook commands sequentially. Stops and returns

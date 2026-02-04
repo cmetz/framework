@@ -16,6 +16,7 @@ import gleam/io
 import gleam/list
 import gleam/string
 import glimr/cache/driver.{type CacheStore} as _cache_driver
+import glimr/config/cache
 import glimr/config/database
 import glimr/console/console
 import glimr/db/driver.{type Connection, type DriverType}
@@ -224,13 +225,12 @@ pub fn get_args() -> List(String) {
 @internal
 pub fn find_and_run(
   commands: List(Command),
-  cache_stores: List(CacheStore),
   name: String,
   args: List(String),
 ) -> Bool {
   case find(commands, name) {
     Ok(cmd) -> {
-      run(cmd, args, cache_stores)
+      run(cmd, args)
       True
     }
     Error(_) -> False
@@ -336,7 +336,7 @@ fn find(commands: List(Command), name: String) -> Result(Command, Nil) {
 /// concerns (help flags, argument validation) before delegating
 /// to the appropriate handler based on command type.
 ///
-fn run(cmd: Command, args: List(String), cache_stores: List(CacheStore)) -> Nil {
+fn run(cmd: Command, args: List(String)) -> Nil {
   // If the args passed have help flags (--h, -h), then we can just
   // print the help information for the command, and return
   use <- bool.lazy_guard(has_help_flag(args), fn() { print_command_help(cmd) })
@@ -355,6 +355,7 @@ fn run(cmd: Command, args: List(String), cache_stores: List(CacheStore)) -> Nil 
 
         // Handle a command with cache access
         CommandWithCache(run_with_cache:, driver_type:, ..) -> {
+          let cache_stores = cache.load()
           use p, conn <- run_with_connection(parsed, driver_type)
 
           run_with_cache(p, conn, cache_stores)

@@ -1,5 +1,5 @@
 import gleam/io
-import glimr/console/command.{type Command, type Args}
+import glimr/console/command.{type Args, type Command}
 import glimr/console/console
 import glimr/internal/actions/run_hooks
 import glimr/internal/actions/run_with_watch

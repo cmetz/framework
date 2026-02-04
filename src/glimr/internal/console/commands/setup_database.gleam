@@ -1,5 +1,5 @@
 import glimr/config/database
-import glimr/console/command.{type Command, type Args, Argument, Flag}
+import glimr/console/command.{type Args, type Command, Argument, Flag}
 import glimr/console/console
 import glimr/db/db
 import glimr/internal/actions/run_setup_db
