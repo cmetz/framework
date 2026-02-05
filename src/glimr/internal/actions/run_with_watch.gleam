@@ -11,9 +11,11 @@ import gleam/io
 import gleam/list
 import gleam/string
 import glimr/console/console
+import glimr/internal/actions/compile_commands
+import glimr/internal/actions/compile_loom
 import glimr/internal/actions/compile_routes
 import glimr/internal/actions/run_hooks
-import glimr/internal/config.{type Hooks}
+import glimr/internal/config.{type Config}
 import glimr/internal/dev_proxy
 import simplifile
 
@@ -21,7 +23,7 @@ import simplifile
 /// directory for changes and triggers hooks or restarts based
 /// on which files changed.
 ///
-pub fn run(hooks: Hooks) -> Nil {
+pub fn run(cfg: Config) -> Nil {
   config.load_env()
 
   let app_port = config.app_port()
@@ -32,21 +34,21 @@ pub fn run(hooks: Hooks) -> Nil {
   let initial_mtimes = get_watched_file_mtimes("src")
   let port = start_gleam_run()
   start_output_reader(port)
-  watch_loop(initial_mtimes, port, hooks)
+  watch_loop(initial_mtimes, port, cfg)
 }
 
 /// Main file watching loop. Polls for file changes every
 /// second and triggers appropriate hooks or restarts based
 /// on which files were modified.
 ///
-fn watch_loop(last_mtimes: Dict(String, Int), port: Port, hooks: Hooks) -> Nil {
+fn watch_loop(last_mtimes: Dict(String, Int), port: Port, cfg: Config) -> Nil {
   process.sleep(1000)
 
   let current_mtimes = get_watched_file_mtimes("src")
   let changed_files = find_changed_files(last_mtimes, current_mtimes)
 
   case changed_files {
-    [] -> watch_loop(current_mtimes, port, hooks)
+    [] -> watch_loop(current_mtimes, port, cfg)
     files -> {
       let controller_changed =
         list.any(files, fn(f) {
@@ -59,65 +61,91 @@ fn watch_loop(last_mtimes: Dict(String, Int), port: Port, hooks: Hooks) -> Nil {
           || string.contains(f, "src/app/loom/")
         })
 
+      let command_changed =
+        list.any(files, fn(f) {
+          string.contains(f, "src/app/console/commands/")
+          && string.ends_with(f, ".gleam")
+        })
+
       let only_compiled_files =
         list.all(files, fn(f) {
           string.contains(f, "src/compiled/routes/")
           || string.contains(f, "src/compiled/loom/")
         })
 
-      case controller_changed, loom_source_changed {
-        True, _ -> {
-          let controller_files =
-            list.filter(files, fn(f) {
-              string.contains(f, "src/app/http/controllers/")
-            })
+      case controller_changed, loom_source_changed, command_changed {
+        True, _, _ -> {
+          case cfg.routes.auto_compile {
+            True -> {
+              let controller_files =
+                list.filter(files, fn(f) {
+                  string.contains(f, "src/app/http/controllers/")
+                })
 
-          io.println("")
-          io.println(console.warning("Controller changes detected:"))
-          list.each(controller_files, fn(f) { io.println("  " <> f) })
-          io.println("")
+              io.println("")
+              io.println(console.warning("Controller changes detected:"))
+              list.each(controller_files, fn(f) { io.println("  " <> f) })
+              io.println("")
 
-          // Recompile all routes when any controller changes
-          case compile_routes.run(False) {
-            Ok(_) -> watch_loop(current_mtimes, port, hooks)
-            Error(msg) -> {
-              io.println(console.error(msg))
-              watch_loop(current_mtimes, port, hooks)
-            }
-          }
-        }
-        _, True -> {
-          let loom_files =
-            list.filter(files, fn(f) {
-              string.ends_with(f, ".loom.html")
-              || string.contains(f, "src/app/loom/")
-            })
-
-          io.println("")
-          io.println(console.warning("File changes detected:"))
-          list.each(loom_files, fn(f) { io.println(f) })
-          io.println("")
-
-          case list.is_empty(hooks.run_reload_loom_modified) {
-            True -> watch_loop(current_mtimes, port, hooks)
-            False -> {
-              case
-                run_hooks.run_for_files(
-                  hooks.run_reload_loom_modified,
-                  loom_files,
-                )
-              {
-                Ok(_) -> watch_loop(current_mtimes, port, hooks)
+              // Recompile all routes when any controller changes
+              case compile_routes.run(False) {
+                Ok(_) -> watch_loop(current_mtimes, port, cfg)
                 Error(msg) -> {
-                  io.println("")
                   io.println(console.error(msg))
-                  watch_loop(current_mtimes, port, hooks)
+                  watch_loop(current_mtimes, port, cfg)
                 }
               }
             }
+            False -> watch_loop(current_mtimes, port, cfg)
           }
         }
-        False, False -> {
+        _, True, _ -> {
+          case cfg.loom.auto_compile {
+            True -> {
+              let loom_files =
+                list.filter(files, fn(f) {
+                  string.ends_with(f, ".loom.html")
+                  || string.contains(f, "src/app/loom/")
+                })
+
+              io.println("")
+              io.println(console.warning("Loom changes detected:"))
+              list.each(loom_files, fn(f) { io.println("  " <> f) })
+              io.println("")
+
+              // Compile changed loom files
+              list.each(loom_files, fn(path) {
+                let _ = compile_loom.run_path(path, False)
+                Nil
+              })
+
+              watch_loop(current_mtimes, port, cfg)
+            }
+            False -> watch_loop(current_mtimes, port, cfg)
+          }
+        }
+        _, _, True -> {
+          case cfg.commands.auto_compile {
+            True -> {
+              let command_files =
+                list.filter(files, fn(f) {
+                  string.contains(f, "src/app/console/commands/")
+                  && string.ends_with(f, ".gleam")
+                })
+
+              io.println("")
+              io.println(console.warning("Command changes detected:"))
+              list.each(command_files, fn(f) { io.println("  " <> f) })
+              io.println("")
+
+              // Regenerate command registry
+              let _ = compile_commands.run(False)
+              watch_loop(current_mtimes, port, cfg)
+            }
+            False -> watch_loop(current_mtimes, port, cfg)
+          }
+        }
+        False, False, False -> {
           case only_compiled_files {
             True -> Nil
             False -> {
@@ -128,12 +156,12 @@ fn watch_loop(last_mtimes: Dict(String, Int), port: Port, hooks: Hooks) -> Nil {
             }
           }
 
-          case list.is_empty(hooks.run_reload_pre) {
+          case list.is_empty(cfg.hooks.run_reload_pre) {
             True -> Nil
             False -> {
               io.println("")
               io.println(console.warning("Running pre-reload hooks..."))
-              case run_hooks.run(hooks.run_reload_pre) {
+              case run_hooks.run(cfg.hooks.run_reload_pre) {
                 Ok(_) -> Nil
                 Error(msg) -> {
                   io.println(console.error(msg))
@@ -142,12 +170,12 @@ fn watch_loop(last_mtimes: Dict(String, Int), port: Port, hooks: Hooks) -> Nil {
             }
           }
 
-          case list.is_empty(hooks.run_reload_post_modified) {
+          case list.is_empty(cfg.hooks.run_reload_post_modified) {
             True -> Nil
             False -> {
               io.println("")
               io.println(console.warning("Running post-modified hooks..."))
-              case run_hooks.run(hooks.run_reload_post_modified) {
+              case run_hooks.run(cfg.hooks.run_reload_post_modified) {
                 Ok(_) -> Nil
                 Error(msg) -> {
                   io.println(console.error(msg))
@@ -161,7 +189,7 @@ fn watch_loop(last_mtimes: Dict(String, Int), port: Port, hooks: Hooks) -> Nil {
           stop_port(port)
           let new_port = start_gleam_run()
           start_output_reader(new_port)
-          watch_loop(current_mtimes, new_port, hooks)
+          watch_loop(current_mtimes, new_port, cfg)
         }
       }
     }
