@@ -6,9 +6,6 @@ import glimr/internal/actions/run_build
 import glimr/internal/actions/run_hooks
 import glimr/internal/config
 
-/// The name of the console command.
-const name = "build"
-
 /// The console command description.
 const description = "Build the application"
 
@@ -16,7 +13,6 @@ const description = "Build the application"
 ///
 pub fn command() -> Command {
   command.new()
-  |> command.name(name)
   |> command.description(description)
   |> command.handler(fn(args) { run(args) })
 }
@@ -51,6 +47,12 @@ fn run(_args: Args) -> Nil {
       halt(1)
     }
   }
+}
+
+/// Console command's entry point
+///
+pub fn main() {
+  command.run(command())
 }
 
 @external(erlang, "erlang", "halt")

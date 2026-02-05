@@ -5,9 +5,6 @@ import glimr/console/console
 import glimr/filesystem/filesystem
 import glimr/utils/string as glimr_string
 
-/// The name of the console command.
-const name = "make:model"
-
 /// The console command description.
 const description = "Create a new model"
 
@@ -15,7 +12,6 @@ const description = "Create a new model"
 ///
 pub fn command() -> Command {
   command.new()
-  |> command.name(name)
   |> command.description(description)
   |> command.args([
     Argument(name: "name", description: "The name of the model"),
@@ -70,4 +66,10 @@ fn run(args: Args) -> Nil {
       |> console.print()
     }
   }
+}
+
+/// Console command's entry point
+///
+pub fn main() {
+  command.run(command())
 }

@@ -3,9 +3,6 @@ import glimr/console/command.{type Args, type Command, Flag}
 import glimr/console/console
 import glimr/internal/actions/compile_routes
 
-/// The name of the console command.
-const name = "route:compile"
-
 /// The console command description.
 const description = "Compile controller routes to optimized pattern matching"
 
@@ -13,7 +10,6 @@ const description = "Compile controller routes to optimized pattern matching"
 ///
 pub fn command() -> Command {
   command.new()
-  |> command.name(name)
   |> command.description(description)
   |> command.args([
     Flag("verbose", "v", "Display information about compiled routes"),
@@ -30,4 +26,10 @@ fn run(args: Args) -> Nil {
     Ok(_) -> Nil
     Error(msg) -> io.println(console.error(msg))
   }
+}
+
+/// Console command's entry point
+///
+pub fn main() {
+  command.run(command())
 }

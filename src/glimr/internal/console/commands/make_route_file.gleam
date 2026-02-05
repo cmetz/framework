@@ -3,9 +3,6 @@ import glimr/console/command.{type Args, type Command, Argument, Flag}
 import glimr/console/console
 import glimr/filesystem/filesystem
 
-/// The name of the console command.
-const name = "make:route-file"
-
 /// The console command description.
 const description = "Create a new route file"
 
@@ -13,7 +10,6 @@ const description = "Create a new route file"
 ///
 pub fn command() -> Command {
   command.new()
-  |> command.name(name)
   |> command.description(description)
   |> command.args([
     Argument(name: "name", description: "The name of the route file"),
@@ -57,4 +53,10 @@ fn run(args: Args) -> Nil {
       |> console.print()
     }
   }
+}
+
+/// Console command's entry point
+///
+pub fn main() {
+  command.run(command())
 }

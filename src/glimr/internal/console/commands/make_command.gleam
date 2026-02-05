@@ -3,9 +3,6 @@ import glimr/console/command.{type Args, type Command, Argument, Flag}
 import glimr/console/console
 import glimr/filesystem/filesystem
 
-/// The name of the console command.
-const name = "make:command"
-
 /// The console command description.
 const description = "Create a new command"
 
@@ -13,7 +10,6 @@ const description = "Create a new command"
 ///
 pub fn command() -> Command {
   command.new()
-  |> command.name(name)
   |> command.description(description)
   |> command.args([
     Argument(name: "name", description: "The name of the command"),
@@ -83,4 +79,10 @@ fn run(args: Args) -> Nil {
       }
     }
   }
+}
+
+/// Console command's entry point
+///
+pub fn main() {
+  command.run(command())
 }

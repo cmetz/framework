@@ -4,9 +4,6 @@ import glimr/console/console
 import glimr/db/db
 import glimr/internal/actions/run_setup_db
 
-/// The name of the console command.
-const name = "setup:database"
-
 /// The console command description.
 const description = "Set up a new database directory in src/data"
 
@@ -14,7 +11,6 @@ const description = "Set up a new database directory in src/data"
 ///
 pub fn command() -> Command {
   command.new()
-  |> command.name(name)
   |> command.description(description)
   |> command.args([
     Argument(name: "name", description: "Database connection name"),
@@ -45,4 +41,10 @@ fn run(args: Args) -> Nil {
     }
     Ok(_) -> run_setup_db.run(name, create_sqlite)
   }
+}
+
+/// Console command's entry point
+///
+pub fn main() {
+  command.run(command())
 }

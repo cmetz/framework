@@ -1,12 +1,8 @@
-import gleam/io
 import glimr/console/command.{type Args, type Command}
 import glimr/console/console
-import glimr/internal/actions/run_hooks
-import glimr/internal/actions/run_with_watch
-import glimr/internal/config
 
 /// The console command description.
-const description = "Run the application with hot reload"
+const description = "A simple hello from Glimr, to you"
 
 /// Define the console command and its properties.
 ///
@@ -19,14 +15,9 @@ pub fn command() -> Command {
 /// Execute the console command.
 ///
 fn run(_args: Args) -> Nil {
-  let cfg = config.load()
-
-  case run_hooks.run(cfg.hooks.run_pre) {
-    Ok(_) -> run_with_watch.run(cfg)
-    Error(msg) -> {
-      io.println(console.error(msg))
-    }
-  }
+  console.output()
+  |> console.line("Hello! We hope you're enjoying Glimr")
+  |> console.print()
 }
 
 /// Console command's entry point

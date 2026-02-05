@@ -3,9 +3,6 @@ import glimr/console/command.{type Args, type Command, Flag}
 import glimr/console/console
 import glimr/internal/actions/compile_commands
 
-/// The name of the console command.
-const name = "command:compile"
-
 /// The console command description.
 const description = "Compile command registry from configured packages"
 
@@ -13,7 +10,6 @@ const description = "Compile command registry from configured packages"
 ///
 pub fn command() -> Command {
   command.new()
-  |> command.name(name)
   |> command.description(description)
   |> command.args([
     Flag("verbose", "v", "Display information about compiled commands"),

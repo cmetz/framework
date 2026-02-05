@@ -52,41 +52,55 @@ pub fn run(verbose: Bool) -> Result(Nil, String) {
   let cfg = config.load()
   let commands = scan_commands(cfg.commands.packages)
 
-  case list.is_empty(commands) {
-    True -> {
-      console.output()
-      |> console.line_warning("No commands found")
-      |> console.print()
-      Ok(Nil)
+  // Check for collisions
+  case find_collisions(commands) {
+    [#(name, module1, module2), ..] -> {
+      Error(
+        "Command name collision: \""
+        <> name
+        <> "\" exists in multiple locations:\n  - "
+        <> module1
+        <> "\n  - "
+        <> module2,
+      )
     }
-    False -> {
-      case write_registry(commands) {
-        Ok(_) -> {
-          case verbose {
-            True -> {
-              console.output()
-              |> console.line_success(
-                "Compiled "
-                <> string.inspect(list.length(commands))
-                <> " commands to priv/storage/framework/console/commands.json",
-              )
-              |> console.print()
-            }
-            False -> {
-              console.output()
-              |> console.line_success(
-                "Compiled "
-                <> string.inspect(list.length(commands))
-                <> " commands",
-              )
-              |> console.print()
-            }
-          }
+    [] ->
+      case list.is_empty(commands) {
+        True -> {
+          console.output()
+          |> console.line_warning("No commands found")
+          |> console.print()
           Ok(Nil)
         }
-        Error(msg) -> Error(msg)
+        False -> {
+          case write_registry(commands) {
+            Ok(_) -> {
+              case verbose {
+                True -> {
+                  console.output()
+                  |> console.line_success(
+                    "Compiled "
+                    <> string.inspect(list.length(commands))
+                    <> " commands to priv/storage/framework/console/commands.json",
+                  )
+                  |> console.print()
+                }
+                False -> {
+                  console.output()
+                  |> console.line_success(
+                    "Compiled "
+                    <> string.inspect(list.length(commands))
+                    <> " commands",
+                  )
+                  |> console.print()
+                }
+              }
+              Ok(Nil)
+            }
+            Error(msg) -> Error(msg)
+          }
+        }
       }
-    }
   }
 }
 
@@ -103,9 +117,36 @@ pub fn read_registry() -> Result(Dict(String, CommandInfo), Nil) {
 
 // ------------------------------------------------------------- Private Functions
 
-/// Combines package and app commands into one list. App 
-/// commands come last so they can override package commands 
-/// with the same name if needed.
+/// Finds command name collisions across all scanned commands.
+/// Returns a list of tuples containing the colliding name and
+/// the two module paths that define it.
+///
+fn find_collisions(
+  commands: List(CommandInfo),
+) -> List(#(String, String, String)) {
+  commands
+  |> list.fold(dict.new(), fn(seen, cmd) {
+    case dict.get(seen, cmd.name) {
+      Ok(existing_module) -> {
+        // Already seen - this is a collision, store both modules
+        dict.insert(seen, cmd.name, existing_module <> "|" <> cmd.module)
+      }
+      Error(_) -> dict.insert(seen, cmd.name, cmd.module)
+    }
+  })
+  |> dict.to_list
+  |> list.filter_map(fn(entry) {
+    let #(name, modules) = entry
+    case string.split(modules, "|") {
+      [module1, module2, ..] -> Ok(#(name, module1, module2))
+      _ -> Error(Nil)
+    }
+  })
+}
+
+/// Combines package and app commands into one list. Packages
+/// are scanned first, then app commands are appended. Collisions
+/// are detected and reported as errors during compilation.
 ///
 fn scan_commands(packages: List(String)) -> List(CommandInfo) {
   let package_commands =
@@ -220,7 +261,7 @@ fn scan_directory(dir: String, prefix: String) -> List(CommandInfo) {
 fn parse_command_file(path: String, prefix: String) -> Result(CommandInfo, Nil) {
   case simplifile.read(path) {
     Ok(content) -> {
-      let name = path_to_command_name(path, prefix)
+      let name = path_to_command_name(path)
       let description = parse_description(content)
       let module = path_to_module(path, prefix)
       Ok(CommandInfo(name: name, description: description, module: module))
@@ -229,20 +270,17 @@ fn parse_command_file(path: String, prefix: String) -> Result(CommandInfo, Nil) 
   }
 }
 
-/// Uses filename as command name with package prefix. 
-/// Convention over configuration - no need to specify command 
+/// Uses filename as command name without prefix.
+/// Convention over configuration - no need to specify command
 /// name in the source file.
 ///
-fn path_to_command_name(path: String, prefix: String) -> String {
-  let filename =
-    path
-    |> string.split("/")
-    |> list.last
-    |> option.from_result
-    |> option.unwrap("")
-    |> string.replace(".gleam", "")
-
-  prefix <> ":" <> filename
+fn path_to_command_name(path: String) -> String {
+  path
+  |> string.split("/")
+  |> list.last
+  |> option.from_result
+  |> option.unwrap("")
+  |> string.replace(".gleam", "")
 }
 
 /// Converts file path to Gleam module path for dynamic loading.

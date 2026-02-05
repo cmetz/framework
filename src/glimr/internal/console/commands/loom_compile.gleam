@@ -4,9 +4,6 @@ import glimr/console/command.{type Args, type Command, Flag, Option}
 import glimr/console/console
 import glimr/internal/actions/compile_loom
 
-/// The name of the console command.
-const name = "loom:compile"
-
 /// The console command description.
 const description = "Compile loom templates to Gleam code"
 
@@ -14,7 +11,6 @@ const description = "Compile loom templates to Gleam code"
 ///
 pub fn command() -> Command {
   command.new()
-  |> command.name(name)
   |> command.description(description)
   |> command.args([
     Option("path", "Path to a specific loom file to compile", ""),
@@ -61,4 +57,10 @@ fn run(args: Args) -> Nil {
       }
     }
   }
+}
+
+/// Console command's entry point
+///
+pub fn main() {
+  command.run(command())
 }

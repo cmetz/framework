@@ -254,80 +254,6 @@ pub fn get_args() -> List(String) {
   |> list.map(charlist.to_string)
 }
 
-/// Entry point for the kernel to dispatch commands. Returns
-/// a boolean so the kernel knows whether to show "command not
-/// found" or let the command handle its own output.
-///
-@internal
-pub fn find_and_run(commands: List(Command), name: String) -> Bool {
-  case find(commands, name) {
-    Ok(cmd) -> {
-      run(cmd)
-      True
-    }
-    Error(_) -> False
-  }
-}
-
-/// Renders the main help screen when no command is specified.
-/// Groups commands by namespace (e.g., "make:", "db:") so users
-/// can quickly find related commands.
-///
-@internal
-pub fn print_help(commands: List(Command)) {
-  print_glimr_version()
-  io.println("Build scalable web apps AI can understand, and you can trust.")
-  io.println("")
-
-  io.println(console.warning("Usage:"))
-  io.println("  command [arguments] [options]")
-  io.println("")
-
-  // Find the longest command name for alignment
-  let max_length =
-    list.fold(commands, string.length("-h, --help"), fn(acc, cmd) {
-      int.max(acc, string.length(cmd.name))
-    })
-
-  io.println(console.warning("Options:"))
-  let help_label = string.pad_end("-h, --help", max_length + 2, " ")
-  io.println(
-    "  " <> console.success(help_label) <> "Display help for the given command",
-  )
-  io.println("")
-
-  // Split commands into non-namespaced and namespaced
-  let #(non_namespaced, namespaced) =
-    list.partition(commands, fn(cmd) { !string.contains(cmd.name, ":") })
-
-  // Sort non-namespaced commands alphabetically
-  let sorted_non_namespaced =
-    list.sort(non_namespaced, fn(a, b) { string.compare(a.name, b.name) })
-
-  // Group namespaced commands by namespace
-  let grouped = group_by_namespace(namespaced)
-
-  // Sort namespace groups alphabetically
-  let sorted_groups = list.sort(grouped, fn(a, b) { string.compare(a.0, b.0) })
-
-  // Print non-namespaced commands
-  io.println(console.warning("Available commands:"))
-  list.each(sorted_non_namespaced, fn(cmd) {
-    let padded_name = string.pad_end(cmd.name, max_length + 2, " ")
-    io.println("  " <> console.success(padded_name) <> cmd.description)
-  })
-
-  // Print namespaced commands grouped by namespace
-  list.each(sorted_groups, fn(group) {
-    let #(namespace, cmds) = group
-    io.println(" " <> console.warning(namespace))
-    list.each(cmds, fn(cmd) {
-      let padded_name = string.pad_end(cmd.name, max_length + 2, " ")
-      io.println("  " <> console.success(padded_name) <> cmd.description)
-    })
-  })
-}
-
 /// Prints the current Glimr framework version to the console.
 /// Called when the user runs with -V or --version flags, and
 /// also displayed at the top of the help output.
@@ -337,33 +263,7 @@ pub fn print_glimr_version() -> Nil {
   io.println("Glimr " <> console.success(glimr.get_version()))
 }
 
-/// Stores commands in persistent term storage for later
-/// retrieval. Used by the kernel to cache registered commands
-/// so they can be accessed across process boundaries.
-///
-@internal
-pub fn store_commands(commands: List(Command)) -> Nil {
-  erlang_store_commands(commands)
-}
-
-/// Retrieves commands from persistent term storage. This
-/// avoids passing command lists through every function and
-/// allows any process to access them without message passing.
-///
-@internal
-pub fn get_commands() -> List(Command) {
-  erlang_get_commands()
-}
-
 // ------------------------------------------------------------- Private Functions
-
-/// Simple linear search for command lookup. The command list
-/// is small enough that indexing isn't worth the complexity
-/// of maintaining a separate data structure.
-///
-fn find(commands: List(Command), name: String) -> Result(Command, Nil) {
-  list.find(commands, fn(cmd) { cmd.name == name })
-}
 
 /// Shared logic for CommandWithDb and CommandWithCache. Avoids
 /// duplicating the connection lookup and option updating code
@@ -415,27 +315,6 @@ fn find_connection(
 ///
 fn has_help_flag(raw_args: List(String)) -> Bool {
   list.any(raw_args, fn(arg) { arg == "-h" || arg == "--help" })
-}
-
-/// Organizes commands into namespace groups for help display.
-/// This makes it easier for users to discover related commands
-/// (e.g., all "make:" commands together).
-///
-fn group_by_namespace(commands: List(Command)) -> List(#(String, List(Command))) {
-  // Sort all commands first
-  let sorted = list.sort(commands, fn(a, b) { string.compare(a.name, b.name) })
-
-  // Group by namespace
-  list.fold(sorted, [], fn(acc, cmd) {
-    let namespace = case string.split(cmd.name, ":") {
-      [ns, ..] -> ns
-      _ -> ""
-    }
-    case list.key_find(acc, namespace) {
-      Ok(existing) -> list.key_set(acc, namespace, list.append(existing, [cmd]))
-      Error(_) -> list.append(acc, [#(namespace, [cmd])])
-    }
-  })
 }
 
 /// Renders detailed help for a single command. Unlike the
@@ -802,17 +681,3 @@ fn temp_handler(_args: Args) -> Nil {
 ///
 @external(erlang, "init", "get_plain_arguments")
 fn erlang_get_args() -> List(charlist.Charlist)
-
-/// FFI call to store commands in Erlang persistent_term.
-/// Enables fast read access to commands across all processes
-/// without copying data.
-///
-@external(erlang, "glimr_kernel_ffi", "store_commands")
-fn erlang_store_commands(commands: List(Command)) -> Nil
-
-/// FFI call to retrieve commands from Erlang persistent_term.
-/// Returns the commands stored by erlang_store_commands for
-/// use in command dispatch and help display.
-///
-@external(erlang, "glimr_kernel_ffi", "get_stored_commands")
-fn erlang_get_commands() -> List(Command)
