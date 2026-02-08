@@ -457,125 +457,19 @@ fn validate_if_branches(
 }
 
 /// Validates a condition expression from l-if/l-else-if.
-/// Conditions can be simple variables or comparisons.
+/// Expressions are passed through to Gleam - the Gleam compiler
+/// will catch any errors in the expression syntax.
 ///
 fn validate_condition(
-  condition: String,
-  data_fields: Dict(String, String),
-  slot_vars: Set(String),
-  loop_vars: Set(String),
-  source_path: String,
-  line: Int,
+  _condition: String,
+  _data_fields: Dict(String, String),
+  _slot_vars: Set(String),
+  _loop_vars: Set(String),
+  _source_path: String,
+  _line: Int,
 ) -> Result(Nil, String) {
-  let trimmed = string.trim(condition)
-
-  // Handle slot references specially
-  case trimmed {
-    "slot" -> Ok(Nil)
-    _ -> {
-      case string.starts_with(trimmed, "slot.") {
-        True -> Ok(Nil)
-        False -> {
-          // Extract variable names from the condition
-          // Simple heuristic: split on common operators and check each token
-          let vars = extract_vars_from_condition(trimmed)
-          validate_var_list(
-            vars,
-            data_fields,
-            slot_vars,
-            loop_vars,
-            source_path,
-            line,
-          )
-        }
-      }
-    }
-  }
-}
-
-/// Extracts potential variable names from a condition string.
-/// Splits on operators and filters to valid identifiers.
-///
-fn extract_vars_from_condition(condition: String) -> List(String) {
-  condition
-  |> string.replace("==", " ")
-  |> string.replace("!=", " ")
-  |> string.replace(">=", " ")
-  |> string.replace("<=", " ")
-  |> string.replace(">", " ")
-  |> string.replace("<", " ")
-  |> string.replace("&&", " ")
-  |> string.replace("||", " ")
-  |> string.replace("!", " ")
-  |> string.replace("(", " ")
-  |> string.replace(")", " ")
-  |> string.split(" ")
-  |> list.filter(fn(token) {
-    let t = string.trim(token)
-    // Filter out empty, numbers, booleans, and strings
-    t != ""
-    && !is_number(t)
-    && t != "True"
-    && t != "False"
-    && !string.starts_with(t, "\"")
-  })
-}
-
-/// Validates a list of variable names.
-///
-fn validate_var_list(
-  vars: List(String),
-  data_fields: Dict(String, String),
-  slot_vars: Set(String),
-  loop_vars: Set(String),
-  source_path: String,
-  line: Int,
-) -> Result(Nil, String) {
-  case vars {
-    [] -> Ok(Nil)
-    [var, ..rest] -> {
-      case
-        validate_expression(
-          var,
-          data_fields,
-          slot_vars,
-          loop_vars,
-          source_path,
-          line,
-        )
-      {
-        Error(e) -> Error(e)
-        Ok(_) ->
-          validate_var_list(
-            rest,
-            data_fields,
-            slot_vars,
-            loop_vars,
-            source_path,
-            line,
-          )
-      }
-    }
-  }
-}
-
-/// Checks if a string looks like a number.
-///
-fn is_number(s: String) -> Bool {
-  case string.first(s) {
-    Ok(c) ->
-      c == "0"
-      || c == "1"
-      || c == "2"
-      || c == "3"
-      || c == "4"
-      || c == "5"
-      || c == "6"
-      || c == "7"
-      || c == "8"
-      || c == "9"
-    Error(_) -> False
-  }
+  // Allow any Gleam expression - the Gleam compiler will validate
+  Ok(Nil)
 }
 
 /// Validates element/component attributes for undefined variables.
@@ -664,47 +558,20 @@ fn validate_attrs(
   }
 }
 
-/// Validates a single expression (variable reference).
-/// Handles dotted access like user.name by checking the root.
+/// Validates a single expression.
+/// Expressions are passed through to Gleam - the Gleam compiler
+/// will catch any errors in the expression syntax.
 ///
 fn validate_expression(
-  expr: String,
-  data_fields: Dict(String, String),
-  slot_vars: Set(String),
-  loop_vars: Set(String),
-  source_path: String,
-  line: Int,
+  _expr: String,
+  _data_fields: Dict(String, String),
+  _slot_vars: Set(String),
+  _loop_vars: Set(String),
+  _source_path: String,
+  _line: Int,
 ) -> Result(Nil, String) {
-  let trimmed = string.trim(expr)
-
-  // Handle dotted access - get the root variable
-  let root = case string.split_once(trimmed, ".") {
-    Ok(#(root, _)) -> root
-    Error(_) -> trimmed
-  }
-
-  // Check if it's a known variable
-  let is_data_field = dict.has_key(data_fields, root)
-  let is_slot_var = set.contains(slot_vars, root)
-  let is_loop_var = set.contains(loop_vars, root)
-
-  case is_data_field || is_slot_var || is_loop_var {
-    True -> Ok(Nil)
-    False ->
-      Error(
-        "Undefined variable '"
-        <> root
-        <> "' in "
-        <> source_path
-        <> ":"
-        <> int.to_string(line)
-        <> "\n\nThe variable {{ "
-        <> root
-        <> " }} is used in the template but not defined.\n"
-        <> "Add it to your @props directive.\n\n"
-        <> "https://github.com/glimr-org/glimr?tab=readme-ov-file#variables",
-      )
-  }
+  // Allow any Gleam expression - the Gleam compiler will validate
+  Ok(Nil)
 }
 
 // ------------------------------------------------------------- Private Functions
@@ -927,6 +794,114 @@ fn separate_slot_defs(
   })
 }
 
+/// Generates nested case expressions for if/elseif/else chains.
+/// Uses `case condition { True -> ... False -> ... }` pattern
+/// which allows function calls in conditions (unlike guards).
+///
+fn generate_if_branches(
+  branches: List(#(Option(String), Int, List(parser.Node))),
+  indent: Int,
+  component_data: ComponentDataMap,
+  component_slots: ComponentSlotMap,
+  loop_vars: Set(String),
+) -> String {
+  let pad = string.repeat("  ", indent)
+  generate_if_branches_recursive(
+    branches,
+    indent,
+    pad,
+    component_data,
+    component_slots,
+    loop_vars,
+  )
+}
+
+fn generate_if_branches_recursive(
+  branches: List(#(Option(String), Int, List(parser.Node))),
+  indent: Int,
+  pad: String,
+  component_data: ComponentDataMap,
+  component_slots: ComponentSlotMap,
+  loop_vars: Set(String),
+) -> String {
+  case branches {
+    [] -> ""
+    [#(None, _line, body), ..] -> {
+      // Else branch - just output the body (ignore any remaining branches)
+      let body_code =
+        generate_nodes_code_with_loop_vars(
+          body,
+          indent + 2,
+          component_data,
+          component_slots,
+          loop_vars,
+        )
+      pad <> "<> {\n" <> pad <> "  \"\"\n" <> body_code <> pad <> "}\n"
+    }
+    [#(Some(cond), _line, body), ..rest] -> {
+      let transformed_cond = transform_slot_condition(cond)
+      let body_code =
+        generate_nodes_code_with_loop_vars(
+          body,
+          indent + 2,
+          component_data,
+          component_slots,
+          loop_vars,
+        )
+      let else_code = case rest {
+        [] ->
+          // No else branch - output empty string
+          pad <> "    False -> \"\"\n"
+        [#(None, _, else_body)] -> {
+          // Simple else branch
+          let else_body_code =
+            generate_nodes_code_with_loop_vars(
+              else_body,
+              indent + 2,
+              component_data,
+              component_slots,
+              loop_vars,
+            )
+          pad
+          <> "    False -> {\n"
+          <> pad
+          <> "      \"\"\n"
+          <> else_body_code
+          <> pad
+          <> "    }\n"
+        }
+        _ -> {
+          // More branches (else-if) - recurse
+          let nested =
+            generate_if_branches_recursive(
+              rest,
+              indent + 2,
+              pad <> "    ",
+              component_data,
+              component_slots,
+              loop_vars,
+            )
+          pad <> "    False ->\n" <> nested
+        }
+      }
+      pad
+      <> "<> case "
+      <> transformed_cond
+      <> " {\n"
+      <> pad
+      <> "    True -> {\n"
+      <> pad
+      <> "      \"\"\n"
+      <> body_code
+      <> pad
+      <> "    }\n"
+      <> else_code
+      <> pad
+      <> "  }\n"
+    }
+  }
+}
+
 /// Transforms slot references in conditions.
 /// - `slot` alone → `slot != ""`
 /// - `slot.header` → `slot_header != ""`
@@ -1090,60 +1065,15 @@ fn generate_node_code_with_loop_vars(
     }
 
     parser.IfNode(branches) -> {
-      // Generate case expression for if/elseif/else
-      let branches_code =
-        list.map(branches, fn(branch) {
-          let #(condition, _line, body) = branch
-          let body_code =
-            generate_nodes_code_with_loop_vars(
-              body,
-              indent + 4,
-              component_data,
-              component_slots,
-              loop_vars,
-            )
-          case condition {
-            Some(cond) -> {
-              // Transform slot references: slot -> slot != "", slot.x -> slot_x != ""
-              let transformed_cond = transform_slot_condition(cond)
-              pad
-              <> "    _ if "
-              <> transformed_cond
-              <> " -> {\n"
-              <> pad
-              <> "      \"\"\n"
-              <> body_code
-              <> pad
-              <> "    }\n"
-            }
-            None ->
-              pad
-              <> "    _ -> {\n"
-              <> pad
-              <> "      \"\"\n"
-              <> body_code
-              <> pad
-              <> "    }\n"
-          }
-        })
-        |> string.join("")
-
-      // Check if there's an else branch (None condition)
-      let has_else =
-        list.any(branches, fn(branch) {
-          case branch.0 {
-            None -> True
-            Some(_) -> False
-          }
-        })
-
-      // Add default empty branch if no else
-      let final_branches = case has_else {
-        True -> branches_code
-        False -> branches_code <> pad <> "    _ -> \"\"\n"
-      }
-
-      pad <> "<> case Nil {\n" <> final_branches <> pad <> "  }\n"
+      // Generate nested case expressions for if/elseif/else chains
+      // This allows function calls in conditions (unlike guard clauses)
+      generate_if_branches(
+        branches,
+        indent,
+        component_data,
+        component_slots,
+        loop_vars,
+      )
     }
 
     parser.EachNode(collection, items, loop_var, body, _line) -> {

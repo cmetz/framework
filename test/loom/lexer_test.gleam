@@ -99,6 +99,34 @@ pub fn tokenize_lm_if_self_closing_test() {
   |> should.equal([Element("br", [LmIf("show", 1)], True)])
 }
 
+pub fn tokenize_lm_if_with_function_call_test() {
+  // l-if with function call in condition - Gleam compiler validates
+  let assert Ok(tokens) =
+    lexer.tokenize("<p l-if=\"list.length(items) > 0\">has items</p>")
+
+  tokens
+  |> should.equal([
+    Element("p", [LmIf("list.length(items) > 0", 1)], False),
+    Text("has items"),
+    ElementEnd("p"),
+  ])
+}
+
+pub fn tokenize_lm_if_with_nested_function_calls_test() {
+  // l-if with nested function calls
+  let assert Ok(tokens) =
+    lexer.tokenize(
+      "<p l-if=\"string.length(string.uppercase(name)) > 5\">long</p>",
+    )
+
+  tokens
+  |> should.equal([
+    Element("p", [LmIf("string.length(string.uppercase(name)) > 5", 1)], False),
+    Text("long"),
+    ElementEnd("p"),
+  ])
+}
+
 // ------------------------------------------------------------- l-else-if and l-else Tests
 
 pub fn tokenize_lm_else_test() {
@@ -153,6 +181,27 @@ pub fn tokenize_multiple_lm_else_if_test() {
     ElementEnd("p"),
     Element("p", [LmElse], False),
     Text("D"),
+    ElementEnd("p"),
+  ])
+}
+
+pub fn tokenize_lm_else_if_with_function_call_test() {
+  // l-else-if with function calls in conditions
+  let assert Ok(tokens) =
+    lexer.tokenize(
+      "<p l-if=\"list.is_empty(items)\">empty</p><p l-else-if=\"list.length(items) == 1\">one</p><p l-else>many</p>",
+    )
+
+  tokens
+  |> should.equal([
+    Element("p", [LmIf("list.is_empty(items)", 1)], False),
+    Text("empty"),
+    ElementEnd("p"),
+    Element("p", [LmElseIf("list.length(items) == 1", 1)], False),
+    Text("one"),
+    ElementEnd("p"),
+    Element("p", [LmElse], False),
+    Text("many"),
     ElementEnd("p"),
   ])
 }
@@ -570,25 +619,30 @@ pub fn error_unterminated_component_test() {
   |> should.be_error
 }
 
-pub fn tokenize_invalid_variable_name_with_spaces_test() {
-  let result = lexer.tokenize("{{ this is wrong }}")
-
-  result
-  |> should.equal(Error(lexer.InvalidVariableName("this is wrong", 0)))
+pub fn tokenize_expression_with_function_call_test() {
+  // Expressions with function calls are now valid - Gleam compiler validates
+  let assert Ok(tokens) = lexer.tokenize("{{ some_fn(arg) }}")
+  tokens |> should.equal([Variable("some_fn(arg)", 1)])
 }
 
-pub fn tokenize_invalid_raw_variable_name_with_spaces_test() {
-  let result = lexer.tokenize("{{{ also wrong }}}")
-
-  result
-  |> should.equal(Error(lexer.InvalidVariableName("also wrong", 0)))
+pub fn tokenize_raw_expression_with_function_call_test() {
+  // Raw expressions with function calls are now valid
+  let assert Ok(tokens) = lexer.tokenize("{{{ string.uppercase(name) }}}")
+  tokens |> should.equal([RawVariable("string.uppercase(name)", 1)])
 }
 
-pub fn tokenize_unterminated_variable_test() {
+pub fn tokenize_unterminated_expression_test() {
   let result = lexer.tokenize("{{ unclosed")
 
   result
-  |> should.equal(Error(lexer.UnterminatedVariable(0)))
+  |> should.equal(Error(lexer.UnterminatedExpression(0)))
+}
+
+pub fn tokenize_empty_expression_test() {
+  let result = lexer.tokenize("{{  }}")
+
+  result
+  |> should.equal(Error(lexer.EmptyExpression(0)))
 }
 
 pub fn tokenize_valid_variable_names_test() {

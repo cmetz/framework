@@ -143,13 +143,13 @@ pub fn generate_if_node_test() {
       False,
     )
 
-  // Should generate case expression with guard
+  // Should generate case expression with condition
   result.code
-  |> string.contains("case Nil {")
+  |> string.contains("case data.show {")
   |> should.be_true
 
   result.code
-  |> string.contains("_ if data.show ->")
+  |> string.contains("True -> {")
   |> should.be_true
 }
 
@@ -162,11 +162,11 @@ pub fn generate_nested_if_test() {
     )
 
   result.code
-  |> string.contains("_ if data.a ->")
+  |> string.contains("case data.a {")
   |> should.be_true
 
   result.code
-  |> string.contains("_ if data.b ->")
+  |> string.contains("case data.b {")
   |> should.be_true
 }
 
@@ -179,9 +179,9 @@ pub fn generate_if_expression_test() {
       False,
     )
 
-  // Should use the expression directly in the guard
+  // Should use the expression directly in case
   result.code
-  |> string.contains("_ if data.user == \"Miguel\" ->")
+  |> string.contains("case data.user == \"Miguel\" {")
   |> should.be_true
 }
 
@@ -196,7 +196,7 @@ pub fn generate_if_literal_true_test() {
 
   // Should use True directly
   result.code
-  |> string.contains("_ if True ->")
+  |> string.contains("case True {")
   |> should.be_true
 }
 
@@ -211,7 +211,7 @@ pub fn generate_if_literal_false_test() {
 
   // Should use False directly
   result.code
-  |> string.contains("_ if False ->")
+  |> string.contains("case False {")
   |> should.be_true
 }
 
@@ -226,7 +226,7 @@ pub fn generate_if_comparison_test() {
 
   // Should use expression directly
   result.code
-  |> string.contains("_ if data.count > 0 ->")
+  |> string.contains("case data.count > 0 {")
   |> should.be_true
 }
 
@@ -241,7 +241,7 @@ pub fn generate_if_negation_test() {
 
   // Should use expression directly
   result.code
-  |> string.contains("_ if !data.is_hidden ->")
+  |> string.contains("case !data.is_hidden {")
   |> should.be_true
 }
 
@@ -254,19 +254,18 @@ pub fn generate_if_else_test() {
       False,
     )
 
-  // Should generate case expression
+  // Should generate case expression with condition
   result.code
-  |> string.contains("case Nil {")
+  |> string.contains("case data.show {")
   |> should.be_true
 
-  // Should have the if condition
+  // Should have True and False branches
   result.code
-  |> string.contains("_ if data.show ->")
+  |> string.contains("True -> {")
   |> should.be_true
 
-  // Should have the else branch (no condition)
   result.code
-  |> string.contains("_ -> {")
+  |> string.contains("False -> {")
   |> should.be_true
 
   // Both branch contents should be present
@@ -280,7 +279,7 @@ pub fn generate_if_else_test() {
 }
 
 pub fn generate_if_elseif_else_test() {
-  // @if with @elseif and @else should generate case with multiple branches
+  // @if with @elseif and @else should generate nested case expressions
   let result =
     generate(
       template([
@@ -293,23 +292,83 @@ pub fn generate_if_elseif_else_test() {
       False,
     )
 
-  // Should generate case expression
+  // Should generate case expressions for each condition
   result.code
-  |> string.contains("case Nil {")
-  |> should.be_true
-
-  // Should have all conditions
-  result.code
-  |> string.contains("_ if data.a ->")
+  |> string.contains("case data.a {")
   |> should.be_true
 
   result.code
-  |> string.contains("_ if data.b ->")
+  |> string.contains("case data.b {")
   |> should.be_true
 
-  // Should have the else branch (no condition)
+  // Should have True branches
   result.code
-  |> string.contains("_ -> {")
+  |> string.contains("True -> {")
+  |> should.be_true
+}
+
+pub fn generate_if_with_function_call_test() {
+  // @if with function call in condition - generates case with function call
+  let result =
+    generate(
+      template([if_node("list.length(data.items) > 0", [TextNode("has items")])]),
+      "if_func",
+      False,
+    )
+
+  // Should generate case expression with function call
+  result.code
+  |> string.contains("case list.length(data.items) > 0 {")
+  |> should.be_true
+
+  result.code
+  |> string.contains("True -> {")
+  |> should.be_true
+}
+
+pub fn generate_if_elseif_with_function_calls_test() {
+  // @if/@elseif with function calls in conditions
+  let result =
+    generate(
+      template([
+        if_elseif_else_node(
+          [
+            #("list.is_empty(data.items)", [TextNode("empty")]),
+            #("list.length(data.items) == 1", [TextNode("one")]),
+          ],
+          [TextNode("many")],
+        ),
+      ]),
+      "if_elseif_func",
+      False,
+    )
+
+  // Should generate case expressions with function calls
+  result.code
+  |> string.contains("case list.is_empty(data.items) {")
+  |> should.be_true
+
+  result.code
+  |> string.contains("case list.length(data.items) == 1 {")
+  |> should.be_true
+}
+
+pub fn generate_if_with_nested_function_calls_test() {
+  // @if with nested function calls
+  let result =
+    generate(
+      template([
+        if_node("string.length(string.uppercase(data.name)) > 5", [
+          TextNode("long name"),
+        ]),
+      ]),
+      "if_nested_func",
+      False,
+    )
+
+  // Should generate case expression with nested function calls
+  result.code
+  |> string.contains("case string.length(string.uppercase(data.name)) > 5 {")
   |> should.be_true
 }
 
@@ -332,13 +391,13 @@ pub fn generate_nested_if_else_test() {
       False,
     )
 
-  // Should have multiple case expressions (one for each if)
+  // Should have case expressions for each condition
   result.code
-  |> string.contains("_ if data.outer ->")
+  |> string.contains("case data.outer {")
   |> should.be_true
 
   result.code
-  |> string.contains("_ if data.inner ->")
+  |> string.contains("case data.inner {")
   |> should.be_true
 }
 
@@ -1217,25 +1276,15 @@ pub fn validate_template_with_defined_variable_test() {
   |> should.be_ok
 }
 
-pub fn validate_template_with_undefined_variable_test() {
+pub fn validate_template_with_expression_variable_test() {
+  // Expressions are allowed - Gleam compiler validates
   let tmpl =
     template_with_props([#("title", "String")], [
-      VariableNode("undefined_var", 5),
+      VariableNode("string.uppercase(title)", 5),
     ])
 
-  let result = generator.validate_template(tmpl, "test.loom.html")
-
-  result
-  |> should.be_error
-
-  case result {
-    Error(msg) -> {
-      msg
-      |> string.contains("Undefined variable 'undefined_var'")
-      |> should.be_true
-    }
-    Ok(_) -> should.fail()
-  }
+  generator.validate_template(tmpl, "test.loom.html")
+  |> should.be_ok
 }
 
 pub fn validate_template_with_dotted_access_test() {
@@ -1247,13 +1296,13 @@ pub fn validate_template_with_dotted_access_test() {
   |> should.be_ok
 }
 
-pub fn validate_template_with_undefined_dotted_access_test() {
-  // user.name where "user" is not defined
+pub fn validate_template_with_any_dotted_access_test() {
+  // Any expression is allowed - Gleam compiler validates
   let tmpl =
     template_with_props([#("title", "String")], [VariableNode("user.name", 1)])
 
   generator.validate_template(tmpl, "test.loom.html")
-  |> should.be_error
+  |> should.be_ok
 }
 
 pub fn validate_template_with_loop_variable_test() {
@@ -1268,7 +1317,7 @@ pub fn validate_template_with_loop_variable_test() {
 }
 
 pub fn validate_template_with_loop_var_outside_scope_test() {
-  // Loop variable used outside the loop should fail
+  // Expressions are allowed - Gleam compiler validates scope
   let tmpl =
     template_with_props([#("items", "List(Item)")], [
       EachNode("items", ["item"], None, [TextNode("in loop")], 1),
@@ -1276,7 +1325,7 @@ pub fn validate_template_with_loop_var_outside_scope_test() {
     ])
 
   generator.validate_template(tmpl, "test.loom.html")
-  |> should.be_error
+  |> should.be_ok
 }
 
 pub fn validate_template_with_tuple_destructuring_test() {
@@ -1347,15 +1396,15 @@ pub fn validate_template_with_if_condition_test() {
   |> should.be_ok
 }
 
-pub fn validate_template_with_undefined_if_condition_test() {
-  // Undefined variable in l-if should fail
+pub fn validate_template_with_expression_in_if_condition_test() {
+  // Expressions in l-if are allowed - Gleam compiler validates
   let tmpl =
-    template_with_props([#("title", "String")], [
-      IfNode([#(Some("undefined"), 1, [TextNode("text")])]),
+    template_with_props([#("age", "Int")], [
+      IfNode([#(Some("age > 18"), 1, [TextNode("adult")])]),
     ])
 
   generator.validate_template(tmpl, "test.loom.html")
-  |> should.be_error
+  |> should.be_ok
 }
 
 pub fn validate_template_with_raw_variable_test() {
@@ -1369,22 +1418,23 @@ pub fn validate_template_with_raw_variable_test() {
   |> should.be_ok
 }
 
-pub fn validate_template_with_undefined_raw_variable_test() {
+pub fn validate_template_with_raw_expression_test() {
+  // Raw expressions are allowed - Gleam compiler validates
   let tmpl =
     template_with_props([#("title", "String")], [
-      RawVariableNode("undefined", 1),
+      RawVariableNode("string.uppercase(title)", 1),
     ])
 
   generator.validate_template(tmpl, "test.loom.html")
-  |> should.be_error
+  |> should.be_ok
 }
 
 pub fn validate_template_with_no_props_test() {
-  // Without props, all variables should fail (except slot vars)
+  // Expressions are allowed - Gleam compiler validates
   let tmpl = template([VariableNode("title", 1)])
 
   generator.validate_template(tmpl, "test.loom.html")
-  |> should.be_error
+  |> should.be_ok
 }
 
 pub fn validate_template_with_nested_loop_test() {
@@ -2024,16 +2074,15 @@ pub fn validate_tuple_arity_nested_tuple_mismatch_test() {
 }
 
 pub fn validate_tuple_arity_unknown_collection_skips_test() {
-  // Unknown collection should skip validation (no props)
+  // Unknown collection should skip arity validation
   let tmpl =
     template([
       EachNode("items", ["a", "b", "c", "d"], None, [VariableNode("a", 1)], 5),
     ])
 
-  // No props - can't validate
+  // Expressions are allowed - Gleam compiler validates
   generator.validate_template(tmpl, "test.loom.html")
-  |> should.be_error
-  // Will fail for undefined variable, not arity
+  |> should.be_ok
 }
 
 // ------------------------------------------------------------- Helpers

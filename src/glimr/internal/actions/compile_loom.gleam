@@ -491,14 +491,10 @@ fn path_to_output_path(path: String) -> String {
 ///
 fn lexer_error_to_string(err: lexer.LexerError) -> String {
   case err {
-    lexer.UnterminatedVariable(pos) ->
-      "Unterminated variable at position " <> int.to_string(pos)
-    lexer.InvalidVariableName(name, pos) ->
-      "Invalid variable name '"
-      <> name
-      <> "' at position "
-      <> int.to_string(pos)
-      <> " (variable names cannot contain spaces)"
+    lexer.UnterminatedExpression(pos) ->
+      "Unterminated expression at position " <> int.to_string(pos)
+    lexer.EmptyExpression(pos) ->
+      "Empty expression at position " <> int.to_string(pos)
     lexer.UnterminatedDirective(pos) ->
       "Unterminated directive at position " <> int.to_string(pos)
     lexer.InvalidDirective(dir, pos) ->

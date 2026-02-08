@@ -61,8 +61,8 @@ pub type ComponentAttr {
 /// directive syntax.
 ///
 pub type LexerError {
-  UnterminatedVariable(position: Int)
-  InvalidVariableName(name: String, position: Int)
+  UnterminatedExpression(position: Int)
+  EmptyExpression(position: Int)
   UnterminatedDirective(position: Int)
   InvalidDirective(directive: String, position: Int)
   InvalidLmForSyntax(content: String, position: Int)
@@ -109,47 +109,47 @@ fn do_tokenize(
 
     "{{{" <> rest -> {
       case string.split_once(rest, "}}}") {
-        Ok(#(name, remaining)) -> {
-          let name = string.trim(name)
-          case is_valid_variable_name(name) {
-            True -> {
-              let new_pos = position + 6 + string.length(name)
-              let new_line = line + count_newlines("{{{" <> name <> "}}}")
+        Ok(#(expr, remaining)) -> {
+          let expr = string.trim(expr)
+          case expr {
+            "" -> Error(EmptyExpression(position))
+            _ -> {
+              let new_pos = position + 6 + string.length(expr)
+              let new_line = line + count_newlines("{{{" <> expr <> "}}}")
               do_tokenize(
                 remaining,
                 new_pos,
                 new_line,
-                [RawVariable(name, line), ..tokens],
+                [RawVariable(expr, line), ..tokens],
                 tag_stack,
               )
             }
-            False -> Error(InvalidVariableName(name, position))
           }
         }
-        Error(_) -> Error(UnterminatedVariable(position))
+        Error(_) -> Error(UnterminatedExpression(position))
       }
     }
 
     "{{" <> rest -> {
       case string.split_once(rest, "}}") {
-        Ok(#(name, remaining)) -> {
-          let name = string.trim(name)
-          case is_valid_variable_name(name) {
-            True -> {
-              let new_pos = position + 4 + string.length(name)
-              let new_line = line + count_newlines("{{" <> name <> "}}")
+        Ok(#(expr, remaining)) -> {
+          let expr = string.trim(expr)
+          case expr {
+            "" -> Error(EmptyExpression(position))
+            _ -> {
+              let new_pos = position + 4 + string.length(expr)
+              let new_line = line + count_newlines("{{" <> expr <> "}}")
               do_tokenize(
                 remaining,
                 new_pos,
                 new_line,
-                [Variable(name, line), ..tokens],
+                [Variable(expr, line), ..tokens],
                 tag_stack,
               )
             }
-            False -> Error(InvalidVariableName(name, position))
           }
         }
-        Error(_) -> Error(UnterminatedVariable(position))
+        Error(_) -> Error(UnterminatedExpression(position))
       }
     }
 
@@ -1457,23 +1457,5 @@ fn is_letter(char: String) -> Bool {
     "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" ->
       True
     _ -> False
-  }
-}
-
-/// Validates a variable name. Returns true if all characters
-/// are alphanumeric, underscore, or dot for nested property
-/// access like data.user.name.
-///
-fn is_valid_variable_name(name: String) -> Bool {
-  case name {
-    "" -> False
-    _ -> {
-      // Check each character is valid (alphanumeric, underscore, or dot for nested access)
-      name
-      |> string.to_graphemes
-      |> list.all(fn(char) {
-        string_utils.is_alphanumeric(char) || char == "_" || char == "."
-      })
-    }
   }
 }

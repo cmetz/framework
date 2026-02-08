@@ -286,7 +286,7 @@ pub fn compile_component_template_test() {
   |> should.be_true
 
   generated.code
-  |> string.contains("_ if dismissible ->")
+  |> string.contains("case dismissible {")
   |> should.be_true
 
   // Should use slot argument directly
@@ -817,4 +817,277 @@ pub fn pipeline_tracks_mixed_line_numbers_test() {
     }
     _ -> panic as "Expected header variable first"
   }
+}
+
+// ------------------------------------------------------------- Expression Tests
+
+pub fn pipeline_expression_with_function_call_test() {
+  // {{ fn(arg) }} should parse and generate correctly
+  let template = "{{ string.uppercase(name) }}"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as VariableNode with the full expression
+  parsed.nodes
+  |> should.equal([parser.VariableNode("string.uppercase(name)", 1)])
+
+  // Generated code should use runtime.display with the expression
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("runtime.display(string.uppercase(name))")
+  |> should.be_true
+}
+
+pub fn pipeline_raw_expression_with_function_call_test() {
+  // {{{ fn(arg) }}} should parse and generate correctly
+  let template = "{{{ string.uppercase(name) }}}"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as RawVariableNode with the full expression
+  parsed.nodes
+  |> should.equal([parser.RawVariableNode("string.uppercase(name)", 1)])
+
+  // Generated code should output expression directly (no runtime.display)
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("<> string.uppercase(name)")
+  |> should.be_true
+}
+
+pub fn pipeline_expression_with_nested_function_calls_test() {
+  // Nested function calls should work
+  let template = "{{ string.length(string.uppercase(name)) }}"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  parsed.nodes
+  |> should.equal([
+    parser.VariableNode("string.length(string.uppercase(name))", 1),
+  ])
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("runtime.display(string.length(string.uppercase(name)))")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_if_with_function_call_test() {
+  // l-if with function call should parse and generate correctly
+  let template = "<span l-if=\"list.length(items) > 0\">has items</span>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as IfNode with the full expression as condition
+  case parsed.nodes {
+    [parser.IfNode([#(Some("list.length(items) > 0"), _, _)])] -> Nil
+    _ -> panic as "Expected IfNode with function call condition"
+  }
+
+  // Generated code should have case expression with function call
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("case list.length(items) > 0 {")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_else_if_with_function_call_test() {
+  // l-else-if with function call should parse and generate correctly
+  let template =
+    "<span l-if=\"list.is_empty(items)\">empty</span><span l-else-if=\"list.length(items) == 1\">one</span><span l-else>many</span>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as IfNode with multiple branches
+  case parsed.nodes {
+    [
+      parser.IfNode([
+        #(Some("list.is_empty(items)"), _, _),
+        #(Some("list.length(items) == 1"), _, _),
+        #(None, _, _),
+      ]),
+    ] -> Nil
+    _ -> panic as "Expected IfNode with function call conditions"
+  }
+
+  // Generated code should have nested case expressions with function calls
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("case list.is_empty(items) {")
+  |> should.be_true
+  generated.code
+  |> string.contains("case list.length(items) == 1 {")
+  |> should.be_true
+}
+
+pub fn pipeline_expression_with_pipe_operator_test() {
+  // Pipe operator should work in expressions
+  let template = "{{ name |> string.uppercase }}"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  parsed.nodes
+  |> should.equal([parser.VariableNode("name |> string.uppercase", 1)])
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("runtime.display(name |> string.uppercase)")
+  |> should.be_true
+}
+
+pub fn pipeline_expression_with_arithmetic_test() {
+  // Arithmetic expressions should work
+  let template = "{{ count + 1 }}"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  parsed.nodes
+  |> should.equal([parser.VariableNode("count + 1", 1)])
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("runtime.display(count + 1)")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_if_with_boolean_function_test() {
+  // l-if with boolean-returning function should work directly
+  let template = "<div l-if=\"list.is_empty(items)\">No items</div>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("case list.is_empty(items) {")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_if_else_with_expressions_test() {
+  // l-if/l-else with function call expressions
+  let template =
+    "<span l-if=\"list.length(items) > 0\">has items</span><span l-else>empty</span>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as IfNode with two branches (condition + else)
+  case parsed.nodes {
+    [parser.IfNode([#(Some("list.length(items) > 0"), _, _), #(None, _, _)])] ->
+      Nil
+    _ -> panic as "Expected IfNode with if/else branches"
+  }
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("case list.length(items) > 0 {")
+  |> should.be_true
+  generated.code
+  |> string.contains("True -> {")
+  |> should.be_true
+  generated.code
+  |> string.contains("False -> {")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_if_elseif_else_with_expressions_test() {
+  // l-if/l-else-if/l-else with function call expressions
+  let template =
+    "<span l-if=\"list.is_empty(items)\">none</span><span l-else-if=\"list.length(items) == 1\">one</span><span l-else>many</span>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as IfNode with three branches
+  case parsed.nodes {
+    [
+      parser.IfNode([
+        #(Some("list.is_empty(items)"), _, _),
+        #(Some("list.length(items) == 1"), _, _),
+        #(None, _, _),
+      ]),
+    ] -> Nil
+    _ -> panic as "Expected IfNode with if/else-if/else branches"
+  }
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  // Should have nested case expressions
+  generated.code
+  |> string.contains("case list.is_empty(items) {")
+  |> should.be_true
+  generated.code
+  |> string.contains("case list.length(items) == 1 {")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_if_elseif_elseif_else_with_expressions_test() {
+  // l-if/l-else-if/l-else-if/l-else with function call expressions
+  let template =
+    "<span l-if=\"list.is_empty(items)\">none</span><span l-else-if=\"list.length(items) == 1\">one</span><span l-else-if=\"list.length(items) < 5\">few</span><span l-else>many</span>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as IfNode with four branches
+  case parsed.nodes {
+    [
+      parser.IfNode([
+        #(Some("list.is_empty(items)"), _, _),
+        #(Some("list.length(items) == 1"), _, _),
+        #(Some("list.length(items) < 5"), _, _),
+        #(None, _, _),
+      ]),
+    ] -> Nil
+    _ -> panic as "Expected IfNode with if/else-if/else-if/else branches"
+  }
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  // Should have nested case expressions for each condition
+  generated.code
+  |> string.contains("case list.is_empty(items) {")
+  |> should.be_true
+  generated.code
+  |> string.contains("case list.length(items) == 1 {")
+  |> should.be_true
+  generated.code
+  |> string.contains("case list.length(items) < 5 {")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_if_chain_with_complex_expressions_test() {
+  // Complex expressions with multiple function calls and operators
+  let template =
+    "<div l-if=\"string.length(string.trim(name)) > 0 && list.length(items) > 0\">valid</div><div l-else-if=\"string.is_empty(name) || list.is_empty(items)\">invalid</div><div l-else>partial</div>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  case parsed.nodes {
+    [
+      parser.IfNode([
+        #(
+          Some("string.length(string.trim(name)) > 0 && list.length(items) > 0"),
+          _,
+          _,
+        ),
+        #(Some("string.is_empty(name) || list.is_empty(items)"), _, _),
+        #(None, _, _),
+      ]),
+    ] -> Nil
+    _ -> panic as "Expected IfNode with complex expression conditions"
+  }
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains(
+    "case string.length(string.trim(name)) > 0 && list.length(items) > 0 {",
+  )
+  |> should.be_true
 }
