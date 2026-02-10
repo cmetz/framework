@@ -66,18 +66,18 @@ pub fn is_alphanumeric(char: String) -> Bool {
   )
 }
 
-/// Checks if a single grapheme is an ASCII letter. Used
-/// to distinguish HTML tag starts from operators like <
-/// where only letters are valid tag name starters.
-///
 pub fn is_letter(char: String) -> Bool {
   string.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", char)
 }
 
-/// Checks if a single grapheme is an ASCII whitespace
-/// character (space, newline, tab, or carriage return).
-/// Shared by the lexer and parser for consistent handling.
-///
+pub fn is_lowercase_letter(char: String) -> Bool {
+  string.contains("abcdefghijklmnopqrstuvwxyz", char)
+}
+
+pub fn is_uppercase_letter(char: String) -> Bool {
+  string.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ", char)
+}
+
 pub fn is_whitespace(char: String) -> Bool {
   char == " " || char == "\n" || char == "\t" || char == "\r"
 }

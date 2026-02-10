@@ -1,63 +1,92 @@
 //// Code Generator
 ////
-//// Transforms parsed template ASTs into executable Gleam code.
-//// Generates functions that build HTML strings using the
-//// runtime helpers for escaping, conditionals, and loops.
+//// Templates are authored in HTML with directives, but the
+//// server needs executable Gleam functions to render them.
+//// This module closes that gap by transforming the parsed AST 
+//// into string-building Gleam code that calls runtime helpers, 
+//// so templates get full type-checking and compile to native 
+//// BEAM code with no interpretation overhead.
 ////
 
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import glimr/loom/handler_parser
 import glimr/loom/lexer
 import glimr/loom/parser.{type Node, type Template}
+import glimr/utils/string as string_util
 
 // ------------------------------------------------------------- Public Types
 
-/// Maps component names to their expected data fields. Used
-/// to generate default values for missing props when
-/// rendering components.
+/// When a parent template uses a component without supplying
+/// all props, the generator needs to fill in type-appropriate
+/// defaults. This map provides the expected fields per
+/// component so defaults can be generated at compile time
+/// rather than failing at runtime.
 ///
 pub type ComponentDataMap =
   Dict(String, List(#(String, String)))
 
-/// Information about a component's slot usage. Tracks whether
-/// the component uses a default slot and what named slots
-/// it accepts.
+/// Components may accept a default slot, named slots, or
+/// neither. The generator needs this information to decide
+/// which slot arguments to include in the generated render call
+/// and which to supply as empty strings when the parent doesn't 
+/// provide content.
 ///
 pub type ComponentSlotInfo {
   ComponentSlotInfo(has_default_slot: Bool, named_slots: List(String))
 }
 
-/// Maps component names to their slot information. Used when
-/// generating component calls to determine which slot
-/// arguments to include.
+/// Without knowing which slots each component expects, the
+/// generator would either omit required slot arguments (causing
+/// compile errors) or always include every possible slot 
+/// (wasting code). This map lets it emit exactly the right set 
+/// of slot parameters.
 ///
 pub type ComponentSlotMap =
   Dict(String, ComponentSlotInfo)
 
-/// Maps handler identifiers (event, handler_str, line) to their assigned IDs.
-/// Used during code generation to look up the correct handler ID for data attributes.
-///
-type HandlerLookup =
-  Dict(#(String, String, Int), String)
-
-/// The result of code generation. Contains the module name
-/// and the complete generated Gleam source code ready to
-/// be written to a file.
+/// The compiler pipeline needs both the module name (to
+/// determine the output file path) and the generated source 
+/// code (to write it). Bundling them together keeps the caller 
+/// from having to track which code belongs to which module.
 ///
 pub type GeneratedCode {
   GeneratedCode(module_name: String, code: String)
 }
 
+/// The generated handle function signature only includes
+/// special variable parameters ($value, $checked, $key) that 
+/// are actually referenced. Tracking usage as bools lets the 
+/// generator conditionally include each parameter and avoid 
+/// unused-variable warnings.
+///
+pub type UsedSpecialVars {
+  UsedSpecialVars(value: Bool, checked: Bool, key: Bool)
+}
+
+// ------------------------------------------------------------- Private Types
+
+/// Handlers are collected once upfront but referenced many
+/// times during code generation when emitting data-l-*
+/// attributes. A lookup by (event, handler_str, line) lets the 
+/// generator resolve the correct handler ID in O(1) without 
+/// re-scanning the handler list each time.
+///
+type HandlerLookup =
+  Dict(#(String, String, Int), String)
+
 // ------------------------------------------------------------- Public Functions
 
-/// Generates Gleam code from a parsed template. Takes the AST,
-/// module metadata, and type information to produce complete
-/// source code with imports and the render function.
+/// Public entry point for the code generator. Wraps the
+/// internal generate_module with the GeneratedCode return type 
+/// so the compiler pipeline can write the output to the correct 
+/// file path based on the module name.
 ///
 pub fn generate(
   template: Template,
@@ -77,18 +106,22 @@ pub fn generate(
   GeneratedCode(module_name: module_name, code: code)
 }
 
-/// Extracts all named slot references from a template. Walks
-/// the AST to find @slot("name") directives and returns a
-/// deduplicated list of slot names.
+/// The compiler needs to know which named slots a component
+/// template declares so it can build the ComponentSlotMap
+/// before generating parent templates that reference this
+/// component. Deduplication via a set avoids duplicate
+/// parameters in the generated function signature.
 ///
 pub fn extract_named_slots(template: Template) -> List(String) {
   collect_named_slots(template.nodes, set.new())
   |> set.to_list
 }
 
-/// Extracts complete slot information from a component template.
-/// Returns whether it has a default slot and the list of
-/// named slots it accepts.
+/// Combines default slot detection and named slot collection
+/// into a single ComponentSlotInfo. The compiler calls this
+/// once per component template and caches the result so every 
+/// parent template that uses the component can generate correct 
+/// slot arguments.
 ///
 pub fn extract_slot_info(template: Template) -> ComponentSlotInfo {
   ComponentSlotInfo(
@@ -97,9 +130,11 @@ pub fn extract_slot_info(template: Template) -> ComponentSlotInfo {
   )
 }
 
-/// Validates that all variables used in the template are defined.
-/// Checks against props, slot variables, and loop variables.
-/// Returns Ok(Nil) if valid, Error with message if undefined variable found.
+/// Generated code that references undefined variables would
+/// fail to compile with confusing Gleam errors. Validating at 
+/// the template level lets us produce clear, actionable error 
+/// messages pointing to the template source line rather than 
+/// the generated code.
 ///
 pub fn validate_template(
   template: Template,
@@ -120,7 +155,13 @@ pub fn validate_template(
   validate_nodes(template.nodes, data_fields, slot_vars, set.new(), source_path)
 }
 
-/// Validates nodes recursively, tracking scoped loop variables.
+// ------------------------------------------------------------- Private Functions
+
+/// Loop variables (from l-for) are scoped to their loop body, 
+/// so the set of valid variables changes as we descend into 
+/// nested structures. Threading the loop_vars set through 
+/// recursion ensures each variable reference is checked against 
+/// the correct scope.
 ///
 fn validate_nodes(
   nodes: List(Node),
@@ -129,19 +170,20 @@ fn validate_nodes(
   loop_vars: Set(String),
   source_path: String,
 ) -> Result(Nil, String) {
-  case nodes {
-    [] -> Ok(Nil)
-    [node, ..rest] -> {
-      case validate_node(node, data_fields, slot_vars, loop_vars, source_path) {
-        Error(e) -> Error(e)
-        Ok(_) ->
-          validate_nodes(rest, data_fields, slot_vars, loop_vars, source_path)
-      }
-    }
-  }
+  list.try_each(nodes, validate_node(
+    _,
+    data_fields,
+    slot_vars,
+    loop_vars,
+    source_path,
+  ))
 }
 
-/// Validates a single node for undefined variables.
+/// Different node types introduce variables differently —
+/// EachNode adds loop variables to scope, IfNode branches are 
+/// independent, and leaf nodes just need checking. Dispatching 
+/// per node type keeps each validation path focused and ensures 
+/// scope changes are applied correctly.
 ///
 fn validate_node(
   node: Node,
@@ -151,26 +193,6 @@ fn validate_node(
   source_path: String,
 ) -> Result(Nil, String) {
   case node {
-    parser.VariableNode(expr, line) ->
-      validate_expression(
-        expr,
-        data_fields,
-        slot_vars,
-        loop_vars,
-        source_path,
-        line,
-      )
-
-    parser.RawVariableNode(expr, line) ->
-      validate_expression(
-        expr,
-        data_fields,
-        slot_vars,
-        loop_vars,
-        source_path,
-        line,
-      )
-
     parser.IfNode(branches) ->
       validate_if_branches(
         branches,
@@ -181,83 +203,28 @@ fn validate_node(
       )
 
     parser.EachNode(collection, items, loop_var, body, line) -> {
-      // First validate the collection is defined
-      case
-        validate_expression(
-          collection,
-          data_fields,
-          slot_vars,
-          loop_vars,
-          source_path,
-          line,
-        )
-      {
-        Error(e) -> Error(e)
-        Ok(_) -> {
-          // Check tuple arity if destructuring
-          case
-            validate_tuple_arity(
-              collection,
-              items,
-              data_fields,
-              source_path,
-              line,
-            )
-          {
-            Error(e) -> Error(e)
-            Ok(_) -> {
-              // Add loop variables to scope for body validation
-              let new_loop_vars =
-                items
-                |> list.fold(loop_vars, fn(acc, item) { set.insert(acc, item) })
-              let new_loop_vars = case loop_var {
-                Some(lv) -> set.insert(new_loop_vars, lv)
-                None -> new_loop_vars
-              }
-              validate_nodes(
-                body,
-                data_fields,
-                slot_vars,
-                new_loop_vars,
-                source_path,
-              )
-            }
-          }
-        }
+      use _ <- result.try(validate_tuple_arity(
+        collection,
+        items,
+        data_fields,
+        source_path,
+        line,
+      ))
+
+      // Add loop variables to scope for body validation
+      let new_loop_vars =
+        list.fold(items, loop_vars, fn(acc, item) { set.insert(acc, item) })
+
+      let new_loop_vars = case loop_var {
+        Some(lv) -> set.insert(new_loop_vars, lv)
+        None -> new_loop_vars
       }
+
+      validate_nodes(body, data_fields, slot_vars, new_loop_vars, source_path)
     }
 
-    parser.ComponentNode(_, attrs, children) -> {
-      case
-        validate_attrs(attrs, data_fields, slot_vars, loop_vars, source_path)
-      {
-        Error(e) -> Error(e)
-        Ok(_) ->
-          validate_nodes(
-            children,
-            data_fields,
-            slot_vars,
-            loop_vars,
-            source_path,
-          )
-      }
-    }
-
-    parser.ElementNode(_, attrs, children) -> {
-      case
-        validate_attrs(attrs, data_fields, slot_vars, loop_vars, source_path)
-      {
-        Error(e) -> Error(e)
-        Ok(_) ->
-          validate_nodes(
-            children,
-            data_fields,
-            slot_vars,
-            loop_vars,
-            source_path,
-          )
-      }
-    }
+    parser.ComponentNode(_, _, children) | parser.ElementNode(_, _, children) ->
+      validate_nodes(children, data_fields, slot_vars, loop_vars, source_path)
 
     parser.SlotNode(_, fallback) ->
       validate_nodes(fallback, data_fields, slot_vars, loop_vars, source_path)
@@ -265,13 +232,18 @@ fn validate_node(
     parser.SlotDefNode(_, children) ->
       validate_nodes(children, data_fields, slot_vars, loop_vars, source_path)
 
-    parser.TextNode(_) | parser.AttributesNode(_) -> Ok(Nil)
+    parser.VariableNode(_, _)
+    | parser.RawVariableNode(_, _)
+    | parser.TextNode(_)
+    | parser.AttributesNode(_) -> Ok(Nil)
   }
 }
 
-/// Validates tuple destructuring arity in l-for loops.
-/// If the collection's element type is a tuple, checks that the number
-/// of destructuring variables matches the tuple arity.
+/// A mismatch between the number of destructuring variables and 
+/// the tuple arity would produce a cryptic Gleam pattern match 
+/// error in generated code. Catching this at the template level 
+/// gives the author a clear message about which l-for loop has 
+/// the wrong variable count.
 ///
 fn validate_tuple_arity(
   collection: String,
@@ -280,105 +252,90 @@ fn validate_tuple_arity(
   source_path: String,
   line: Int,
 ) -> Result(Nil, String) {
+  let destructure_count = list.length(items)
   // Only validate if we have multiple destructuring variables (tuple pattern)
-  case list.length(items) {
-    1 -> Ok(Nil)
-    destructure_count -> {
-      // Get the root variable name (e.g., "items" from "items" or "user.posts" -> "user")
-      let root = case string.split(collection, ".") {
-        [first, ..] -> first
-        [] -> collection
-      }
+  use <- bool.guard(destructure_count == 1, Ok(Nil))
 
-      // Look up the type in data_fields
-      case dict.get(data_fields, root) {
-        Error(_) -> Ok(Nil)
-        // Can't validate if we don't know the type
-        Ok(type_str) -> {
-          // For dotted access, we can't easily infer the nested type, skip validation
-          case string.contains(collection, ".") {
-            True -> Ok(Nil)
-            False -> {
-              // Try to extract tuple arity from type like "List(#(String, String, String))"
-              case extract_tuple_arity_from_list_type(type_str) {
-                None -> Ok(Nil)
-                // Not a List of tuples, skip validation
-                Some(tuple_arity) -> {
-                  case destructure_count == tuple_arity {
-                    True -> Ok(Nil)
-                    False -> {
-                      Error(
-                        "Tuple destructuring mismatch in "
-                        <> source_path
-                        <> ":"
-                        <> int.to_string(line)
-                        <> "\n\nl-for expected "
-                        <> int.to_string(tuple_arity)
-                        <> " variables but got "
-                        <> int.to_string(destructure_count)
-                        <> " ("
-                        <> string.join(items, ", ")
-                        <> ")\nThe type '"
-                        <> type_str
-                        <> "' has "
-                        <> int.to_string(tuple_arity)
-                        <> "-element tuples.",
-                      )
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+  // Get the root variable name (e.g., "items" from "items" or "user.posts" -> "user")
+  let root = case string.split(collection, ".") {
+    [first, ..] -> first
+    [] -> collection
+  }
+
+  // Can't validate if we don't know the type
+  let type_str = dict.get(data_fields, root)
+  use <- bool.guard(result.is_error(type_str), Ok(Nil))
+  let assert Ok(type_str) = type_str
+
+  // For dotted access, we can't easily infer the nested type, skip validation
+  use <- bool.guard(string.contains(collection, "."), Ok(Nil))
+
+  // Try to extract tuple arity from type like "List(#(String, String, String))"
+  case extract_tuple_arity_from_list_type(type_str) {
+    None -> Ok(Nil)
+    Some(tuple_arity) if destructure_count == tuple_arity -> Ok(Nil)
+    Some(tuple_arity) ->
+      Error(
+        "Tuple destructuring mismatch in "
+        <> source_path
+        <> ":"
+        <> int.to_string(line)
+        <> "\n\nl-for expected "
+        <> int.to_string(tuple_arity)
+        <> " variables but got "
+        <> int.to_string(destructure_count)
+        <> " ("
+        <> string.join(items, ", ")
+        <> ")\nThe type '"
+        <> type_str
+        <> "' has "
+        <> int.to_string(tuple_arity)
+        <> "-element tuples.",
+      )
   }
 }
 
-/// Extracts the tuple arity from a List type containing tuples.
-/// For example: "List(#(String, String, String))" -> Some(3)
-/// Returns None if not a List of tuples.
+/// Tuple arity validation only applies when the collection type 
+/// is a List of tuples. Parsing the type string to extract the 
+/// tuple size lets us compare it against the destructuring 
+/// pattern without requiring a full type system — just enough 
+/// to catch common mistakes.
 ///
 fn extract_tuple_arity_from_list_type(type_str: String) -> Option(Int) {
   let trimmed = string.trim(type_str)
+  use <- bool.guard(!string.starts_with(trimmed, "List("), None)
 
-  // Check if it starts with "List("
-  case string.starts_with(trimmed, "List(") {
-    False -> None
-    True -> {
-      // Remove "List(" prefix and ")" suffix
-      let inner =
-        trimmed
-        |> string.drop_start(5)
-        |> string.drop_end(1)
-        |> string.trim
+  // Remove "List(" prefix and ")" suffix
+  let inner =
+    trimmed
+    |> string.drop_start(5)
+    |> string.drop_end(1)
+    |> string.trim
 
-      // Check if inner type is a tuple "#(...)"
-      case string.starts_with(inner, "#(") {
-        False -> None
-        True -> {
-          // Extract the contents of the tuple and count elements
-          let tuple_inner =
-            inner
-            |> string.drop_start(2)
-            |> string.drop_end(1)
+  use <- bool.guard(!string.starts_with(inner, "#("), None)
 
-          // Count elements by splitting on commas at depth 0
-          Some(count_tuple_elements(tuple_inner))
-        }
-      }
-    }
-  }
+  // Extract the contents of the tuple and count elements
+  let tuple_inner =
+    inner
+    |> string.drop_start(2)
+    |> string.drop_end(1)
+
+  Some(count_tuple_elements(tuple_inner))
 }
 
-/// Counts elements in a tuple type string by counting commas at depth 0.
-/// Handles nested types like "List(String), #(Int, Int)" correctly.
+/// Tuple types can contain nested generics with their own
+/// commas (e.g., List(String), #(Int, Int)). Counting only
+/// commas at nesting depth 0 ensures nested type parameters
+/// don't inflate the element count.
 ///
 fn count_tuple_elements(tuple_inner: String) -> Int {
   count_tuple_elements_helper(tuple_inner, 0, 1)
 }
 
+/// Tail-recursive walker that tracks parenthesis depth so
+/// commas inside nested type parameters (e.g., List(Int)) are 
+/// correctly ignored when counting tuple elements.
+///
 fn count_tuple_elements_helper(input: String, depth: Int, count: Int) -> Int {
   case string.pop_grapheme(input) {
     Error(_) -> count
@@ -393,7 +350,10 @@ fn count_tuple_elements_helper(input: String, depth: Int, count: Int) -> Int {
   }
 }
 
-/// Validates if/elseif/else branches.
+/// Each branch in a conditional chain has its own node tree
+/// that may reference variables. All branches must be validated 
+/// independently since they share the same outer scope but 
+/// don't introduce variables visible to sibling branches.
 ///
 fn validate_if_branches(
   branches: List(#(Option(String), Int, List(Node))),
@@ -402,190 +362,16 @@ fn validate_if_branches(
   loop_vars: Set(String),
   source_path: String,
 ) -> Result(Nil, String) {
-  case branches {
-    [] -> Ok(Nil)
-    [#(condition, line, body), ..rest] -> {
-      // Validate condition expression if present
-      case condition {
-        Some(cond) -> {
-          case
-            validate_condition(
-              cond,
-              data_fields,
-              slot_vars,
-              loop_vars,
-              source_path,
-              line,
-            )
-          {
-            Error(e) -> Error(e)
-            Ok(_) -> {
-              case
-                validate_nodes(
-                  body,
-                  data_fields,
-                  slot_vars,
-                  loop_vars,
-                  source_path,
-                )
-              {
-                Error(e) -> Error(e)
-                Ok(_) ->
-                  validate_if_branches(
-                    rest,
-                    data_fields,
-                    slot_vars,
-                    loop_vars,
-                    source_path,
-                  )
-              }
-            }
-          }
-        }
-        None -> {
-          // else branch - no condition to validate
-          case
-            validate_nodes(body, data_fields, slot_vars, loop_vars, source_path)
-          {
-            Error(e) -> Error(e)
-            Ok(_) ->
-              validate_if_branches(
-                rest,
-                data_fields,
-                slot_vars,
-                loop_vars,
-                source_path,
-              )
-          }
-        }
-      }
-    }
-  }
+  list.try_each(branches, fn(branch) {
+    validate_nodes(branch.2, data_fields, slot_vars, loop_vars, source_path)
+  })
 }
 
-/// Validates a condition expression from l-if/l-else-if.
-/// Expressions are passed through to Gleam - the Gleam compiler
-/// will catch any errors in the expression syntax.
-///
-fn validate_condition(
-  _condition: String,
-  _data_fields: Dict(String, String),
-  _slot_vars: Set(String),
-  _loop_vars: Set(String),
-  _source_path: String,
-  _line: Int,
-) -> Result(Nil, String) {
-  // Allow any Gleam expression - the Gleam compiler will validate
-  Ok(Nil)
-}
-
-/// Validates element/component attributes for undefined variables.
-///
-fn validate_attrs(
-  attrs: List(lexer.ComponentAttr),
-  data_fields: Dict(String, String),
-  slot_vars: Set(String),
-  loop_vars: Set(String),
-  source_path: String,
-) -> Result(Nil, String) {
-  case attrs {
-    [] -> Ok(Nil)
-    [attr, ..rest] -> {
-      case attr {
-        lexer.ExprAttr(_, value) -> {
-          case
-            validate_expression(
-              value,
-              data_fields,
-              slot_vars,
-              loop_vars,
-              source_path,
-              0,
-            )
-          {
-            Error(e) -> Error(e)
-            Ok(_) ->
-              validate_attrs(
-                rest,
-                data_fields,
-                slot_vars,
-                loop_vars,
-                source_path,
-              )
-          }
-        }
-        lexer.LmIf(cond, line) | lexer.LmElseIf(cond, line) -> {
-          case
-            validate_condition(
-              cond,
-              data_fields,
-              slot_vars,
-              loop_vars,
-              source_path,
-              line,
-            )
-          {
-            Error(e) -> Error(e)
-            Ok(_) ->
-              validate_attrs(
-                rest,
-                data_fields,
-                slot_vars,
-                loop_vars,
-                source_path,
-              )
-          }
-        }
-        lexer.LmFor(collection, _, _, line) -> {
-          case
-            validate_expression(
-              collection,
-              data_fields,
-              slot_vars,
-              loop_vars,
-              source_path,
-              line,
-            )
-          {
-            Error(e) -> Error(e)
-            Ok(_) ->
-              validate_attrs(
-                rest,
-                data_fields,
-                slot_vars,
-                loop_vars,
-                source_path,
-              )
-          }
-        }
-        _ ->
-          validate_attrs(rest, data_fields, slot_vars, loop_vars, source_path)
-      }
-    }
-  }
-}
-
-/// Validates a single expression.
-/// Expressions are passed through to Gleam - the Gleam compiler
-/// will catch any errors in the expression syntax.
-///
-fn validate_expression(
-  _expr: String,
-  _data_fields: Dict(String, String),
-  _slot_vars: Set(String),
-  _loop_vars: Set(String),
-  _source_path: String,
-  _line: Int,
-) -> Result(Nil, String) {
-  // Allow any Gleam expression - the Gleam compiler will validate
-  Ok(Nil)
-}
-
-// ------------------------------------------------------------- Private Functions
-
-/// Generates the complete module source code. Combines the
-/// header comment, imports, and html function into a single
-/// string ready for writing.
+/// Orchestrates the full module output: header warning, imports, 
+/// render function, and optional live functions. Keeping this 
+/// as the single assembly point ensures all generated modules 
+/// have a consistent structure and the "DO NOT EDIT" header is 
+/// never accidentally omitted.
 ///
 fn generate_module(
   template: Template,
@@ -629,14 +415,14 @@ fn generate_module(
   string.join([header, imports, "", html_fn, live_fns], "\n")
 }
 
-/// Generates additional functions for live templates.
-/// Includes is_live(), handler metadata, and the handle dispatch function.
+/// Live templates need server-side event handling beyond just 
+/// rendering. These extra functions (is_live, handlers, handle, 
+/// handle_json, render_json) provide the runtime with 
+/// everything it needs for WebSocket-driven interactivity 
+/// without external configuration.
 ///
 fn generate_live_functions(template: Template) -> String {
-  let handlers = case handler_parser.collect_handlers(template) {
-    Error(_) -> []
-    Ok(h) -> h
-  }
+  let handlers = handler_parser.collect_handlers(template) |> result.unwrap([])
 
   let handlers_list =
     handlers
@@ -701,13 +487,10 @@ fn generate_live_functions(template: Template) -> String {
   <> render_json_fn
 }
 
-/// Represents which special variables are used in the template's handlers.
-///
-pub type UsedSpecialVars {
-  UsedSpecialVars(value: Bool, checked: Bool, key: Bool)
-}
-
-/// Collects which special variables are used across all handlers.
+/// A single pass over all handlers determines the union of
+/// special variables needed. Scanning once upfront avoids
+/// redundant per-handler checks when generating both the typed 
+/// handle function and the JSON wrapper.
 ///
 fn collect_used_special_vars(
   handlers: List(#(String, handler_parser.Handler)),
@@ -723,9 +506,11 @@ fn collect_used_special_vars(
   )
 }
 
-/// Generates the handle function for dispatching events.
-/// Takes handler_id, current prop values, and special vars.
-/// Returns a tuple of updated prop values.
+/// The live runtime dispatches events by handler ID and needs 
+/// updated prop values back. A typed handle function with a 
+/// case expression per handler gives the Gleam compiler full 
+/// visibility into the handler logic, catching type errors at 
+/// compile time.
 ///
 fn generate_handle_function(
   template: Template,
@@ -760,26 +545,17 @@ fn generate_handle_function(
 
   // Only include special var parameters that are actually used
   let special_var_params =
-    []
-    |> fn(acc) {
-      case used_vars.value {
-        True -> ["value_: option.Option(String)", ..acc]
-        False -> acc
+    [
+      #(used_vars.value, "value_: option.Option(String)"),
+      #(used_vars.checked, "checked_: option.Option(Bool)"),
+      #(used_vars.key, "key_: option.Option(String)"),
+    ]
+    |> list.filter_map(fn(pair) {
+      case pair.0 {
+        True -> Ok(pair.1)
+        False -> Error(Nil)
       }
-    }
-    |> fn(acc) {
-      case used_vars.checked {
-        True -> ["checked_: option.Option(Bool)", ..acc]
-        False -> acc
-      }
-    }
-    |> fn(acc) {
-      case used_vars.key {
-        True -> ["key_: option.Option(String)", ..acc]
-        False -> acc
-      }
-    }
-    |> list.reverse
+    })
     |> string.join(",\n  ")
 
   let special_params_str = case special_var_params {
@@ -808,7 +584,11 @@ fn generate_handle_function(
   <> "}\n"
 }
 
-/// Generates a single handler case for the handle function.
+/// Each handler case binds the expression result to the target 
+/// prop(s) and returns all props — not just the changed ones. 
+/// Returning the full tuple lets the runtime replace the entire 
+/// prop set atomically without tracking which specific props 
+/// were modified.
 ///
 fn generate_handler_case(
   handler: #(String, handler_parser.Handler),
@@ -845,9 +625,11 @@ fn generate_handler_case(
   <> "    }\n"
 }
 
-/// Transforms special variables in an expression.
-/// $value -> value_, $checked -> checked_, $key -> key_
-/// Also handles Option unwrapping for common patterns.
+/// Template authors write $value/$checked/$key for readability, 
+/// but generated Gleam code receives these as Option types from 
+/// the JS runtime. Replacing them with option.unwrap calls 
+/// provides sensible defaults and avoids forcing authors to 
+/// handle Option explicitly.
 ///
 fn transform_special_vars(expr: String) -> String {
   expr
@@ -856,9 +638,11 @@ fn transform_special_vars(expr: String) -> String {
   |> string.replace("$key", "option.unwrap(key_, \"\")")
 }
 
-/// Generates the handle_json wrapper function for dynamic dispatch.
-/// Parses props from JSON, calls typed handle(), returns JSON.
-/// Note: Signature is fixed for dynamic dispatch compatibility.
+/// The WebSocket runtime dispatches events dynamically by
+/// module name, so it can't call typed functions directly. This 
+/// JSON wrapper provides a uniform String->String interface 
+/// that the runtime can call via dynamic dispatch while the 
+/// typed handle() stays type-safe.
 ///
 fn generate_handle_json_function(
   template: Template,
@@ -942,8 +726,11 @@ fn generate_handle_json_function(
   <> "}\n"
 }
 
-/// Generates the render_json wrapper function for dynamic dispatch.
-/// Parses props from JSON, calls render(), returns HTML.
+/// After handling an event, the runtime needs to re-render the 
+/// template with updated props. Like handle_json, this wrapper 
+/// bridges the gap between dynamic dispatch (JSON strings) and 
+/// the typed render function so the runtime can trigger 
+/// re-renders without knowing prop types.
 ///
 fn generate_render_json_function(template: Template) -> String {
   // Generate the props decoder (same as handle_json)
@@ -970,7 +757,11 @@ fn generate_render_json_function(template: Template) -> String {
   <> "}\n"
 }
 
-/// Generates a decoder for the props tuple/record.
+/// JSON wrapper functions receive props as a JSON string that 
+/// must be decoded into typed Gleam values before calling 
+/// handle() or render(). Generating a decoder per template 
+/// ensures the correct field names and types are used without 
+/// manual boilerplate.
 ///
 fn generate_props_decoder(props: List(#(String, String))) -> String {
   case props {
@@ -1000,7 +791,10 @@ fn generate_props_decoder(props: List(#(String, String))) -> String {
   }
 }
 
-/// Generates the handle() function call with props.
+/// The JSON wrapper decodes props into a tuple but handle()
+/// expects individual named parameters. This function generates 
+/// the destructuring and call expression that bridges between 
+/// the decoded tuple and the typed function signature.
 ///
 fn generate_handle_call(
   props: List(#(String, String)),
@@ -1008,26 +802,17 @@ fn generate_handle_call(
 ) -> String {
   // Build special var args string based on what's used
   let special_args =
-    []
-    |> fn(acc) {
-      case used_vars.value {
-        True -> ["value_opt", ..acc]
-        False -> acc
+    [
+      #(used_vars.value, "value_opt"),
+      #(used_vars.checked, "checked_opt"),
+      #(used_vars.key, "key_opt"),
+    ]
+    |> list.filter_map(fn(pair) {
+      case pair.0 {
+        True -> Ok(pair.1)
+        False -> Error(Nil)
       }
-    }
-    |> fn(acc) {
-      case used_vars.checked {
-        True -> ["checked_opt", ..acc]
-        False -> acc
-      }
-    }
-    |> fn(acc) {
-      case used_vars.key {
-        True -> ["key_opt", ..acc]
-        False -> acc
-      }
-    }
-    |> list.reverse
+    })
     |> string.join(", ")
 
   let special_args_str = case special_args {
@@ -1053,7 +838,10 @@ fn generate_handle_call(
   }
 }
 
-/// Generates the render() function call with props.
+/// Similar to generate_handle_call but for render(). The
+/// decoded props tuple must be destructured into named
+/// arguments matching the render function's signature so the 
+/// JSON wrapper can call render() correctly.
 ///
 fn generate_render_call(props: List(#(String, String))) -> String {
   case props {
@@ -1070,7 +858,10 @@ fn generate_render_call(props: List(#(String, String))) -> String {
   }
 }
 
-/// Generates the JSON encoder for the result.
+/// After handle() returns updated prop values, the JSON wrapper 
+/// must serialize them back to JSON for the WebSocket runtime. 
+/// Generating the encoder per template ensures each prop is 
+/// encoded with the correct JSON type (string, int, bool, etc.).
 ///
 fn generate_result_encoder(props: List(#(String, String))) -> String {
   case props {
@@ -1104,7 +895,10 @@ fn generate_result_encoder(props: List(#(String, String))) -> String {
   }
 }
 
-/// Maps a Gleam type to its JSON decoder.
+/// The props decoder needs type-specific decoders for each
+/// field. Mapping from the type annotation string avoids a full 
+/// type system while covering the common prop types that 
+/// templates actually use.
 ///
 fn type_to_decoder(gleam_type: String) -> String {
   case gleam_type {
@@ -1121,7 +915,10 @@ fn type_to_decoder(gleam_type: String) -> String {
   }
 }
 
-/// Maps a prop name and type to its JSON encoder expression.
+/// The result encoder needs type-specific encoding for each
+/// prop. Mirroring type_to_decoder ensures the encode/decode
+/// round-trip preserves types correctly between the server and 
+/// client.
 ///
 fn type_to_encoder(name: String, gleam_type: String) -> String {
   case gleam_type {
@@ -1138,26 +935,27 @@ fn type_to_encoder(name: String, gleam_type: String) -> String {
   }
 }
 
-/// Builds a lookup map from handler identifiers to their assigned IDs.
-/// Used during code generation to emit data-l-* attributes.
+/// Handler IDs must match between the data-l-* attributes in
+/// the rendered HTML and the handler dispatch function.
+/// Building the lookup once before code generation ensures
+/// consistent IDs across both the attribute emission and the 
+/// handle function's case branches.
 ///
 fn build_handler_lookup(template: Template) -> HandlerLookup {
-  case handler_parser.collect_handlers(template) {
-    Error(_) -> dict.new()
-    Ok(handlers) -> {
-      handlers
-      |> list.fold(dict.new(), fn(acc, item) {
-        let #(id, handler) = item
-        let key = #(handler.event, handler.original, handler.line)
-        dict.insert(acc, key, id)
-      })
-    }
-  }
+  handler_parser.collect_handlers(template)
+  |> result.unwrap([])
+  |> list.fold(dict.new(), fn(acc, item) {
+    let #(id, handler) = item
+    let key = #(handler.event, handler.original, handler.line)
+    dict.insert(acc, key, id)
+  })
 }
 
-/// Generates import statements for the module. Includes the
-/// runtime, user imports from @import directives, and imports
-/// for all referenced components.
+/// Generated modules need imports for the runtime (always),
+/// JSON/decode libraries (live templates only), user-specified
+/// imports (@import directives), and every referenced component. 
+/// Collecting them here ensures the generated module compiles 
+/// without missing dependencies.
 ///
 fn generate_imports(template: Template) -> String {
   // Base imports - runtime is always needed
@@ -1196,9 +994,10 @@ fn generate_imports(template: Template) -> String {
   )
 }
 
-/// Recursively collects all component names from the AST.
-/// Traverses into nested structures to find every component
-/// reference for import generation.
+/// Every component used anywhere in the template — including
+/// inside conditionals, loops, and nested slots — needs an
+/// import statement. Recursive collection ensures no component 
+/// reference is missed regardless of how deeply it is nested.
 ///
 fn collect_component_names(nodes: List(Node), acc: Set(String)) -> Set(String) {
   list.fold(nodes, acc, fn(acc, node) {
@@ -1220,9 +1019,11 @@ fn collect_component_names(nodes: List(Node), acc: Set(String)) -> Set(String) {
   })
 }
 
-/// Recursively collects all named slot references from nodes.
-/// Finds <slot name="..."> elements throughout the template
-/// including inside nested structures.
+/// Named slots at any depth in the template become parameters 
+/// on the generated render function. Collecting them 
+/// recursively ensures slots inside conditionals or loops are 
+/// still discovered, and using a set prevents duplicate 
+/// parameters when the same slot appears twice.
 ///
 fn collect_named_slots(nodes: List(Node), acc: Set(String)) -> Set(String) {
   list.fold(nodes, acc, fn(acc, node) {
@@ -1245,9 +1046,11 @@ fn collect_named_slots(nodes: List(Node), acc: Set(String)) -> Set(String) {
   })
 }
 
-/// Generates the main render function for the template. Builds
-/// the function signature with data and slot parameters, then
-/// generates the body from the template nodes.
+/// The render function is the primary output of code generation 
+/// — it's what application code calls to turn props into HTML. 
+/// Components get automatic @attributes injection into the root 
+/// element so parent-provided attributes pass through without 
+/// explicit placement.
 ///
 fn generate_html_function(
   template: Template,
@@ -1297,9 +1100,11 @@ fn generate_html_function(
   }
 }
 
-/// Wraps live template content with the necessary container and script tags.
-/// Uses runtime.inject_live_wrapper to properly inject into the body tag,
-/// ensuring valid HTML structure when using layout components.
+/// Live templates need a container div with data attributes and 
+/// a script tag for the WebSocket client. Injecting these via 
+/// runtime.inject_live_wrapper at the body tag ensures correct 
+/// HTML structure even when the template uses layout components 
+/// that produce the <body> tag.
 ///
 fn generate_live_wrapper(
   body: String,
@@ -1333,9 +1138,11 @@ fn generate_live_wrapper(
   <> ")\n"
 }
 
-/// Generates the function parameter list. Includes props from
-/// @props directive, slot parameters, and attributes for
-/// components.
+/// The render function's parameter list must include every
+/// piece of data the template can reference: declared props,
+/// slot content strings, and the attributes list (for
+/// components). Building it from template metadata ensures the 
+/// generated signature is always in sync with usage.
 ///
 fn generate_function_params(template: Template, is_component: Bool) -> String {
   // Props from @props directive
@@ -1375,9 +1182,11 @@ fn generate_function_params(template: Template, is_component: Bool) -> String {
   |> string.join(", ")
 }
 
-/// Checks if the template uses a default slot. Recursively
-/// searches for <slot> elements without a name attribute
-/// throughout the AST.
+/// The render function only includes a `slot` parameter if the 
+/// template actually uses <slot /> somewhere. Checking
+/// recursively covers slots nested inside conditionals or loops, 
+/// so the parameter isn't omitted when a slot appears only in a 
+/// branch.
 ///
 fn has_default_slot(nodes: List(Node)) -> Bool {
   list.any(nodes, fn(node) {
@@ -1395,28 +1204,34 @@ fn has_default_slot(nodes: List(Node)) -> Bool {
   })
 }
 
-/// Separates slot definitions from regular content nodes.
-/// Returns default content nodes and a list of named slot
-/// definitions for separate rendering.
+/// When generating a component call, slot definitions (content 
+/// passed to named slots) must be rendered as separate 
+/// arguments, not as part of the default child content. 
+/// Splitting them here lets the generator handle default 
+/// children and named slots independently.
 ///
 fn separate_slot_defs(
   nodes: List(Node),
 ) -> #(List(Node), List(#(Option(String), List(Node)))) {
-  list.fold(nodes, #([], []), fn(acc, node) {
-    let #(default_nodes, slot_defs) = acc
-    case node {
-      parser.SlotDefNode(name, children) -> #(
-        default_nodes,
-        list.append(slot_defs, [#(name, children)]),
-      )
-      _ -> #(list.append(default_nodes, [node]), slot_defs)
-    }
-  })
+  let #(default_nodes, slot_defs) =
+    list.fold(nodes, #([], []), fn(acc, node) {
+      let #(defaults, slots) = acc
+      case node {
+        parser.SlotDefNode(name, children) -> #(defaults, [
+          #(name, children),
+          ..slots
+        ])
+        _ -> #([node, ..defaults], slots)
+      }
+    })
+  #(list.reverse(default_nodes), list.reverse(slot_defs))
 }
 
-/// Generates nested case expressions for if/elseif/else chains.
-/// Uses `case condition { True -> ... False -> ... }` pattern
-/// which allows function calls in conditions (unlike guards).
+/// Gleam guards don't support function calls, but template
+/// conditions often call functions (e.g., list.is_empty). Using 
+/// `case condition { True -> ... False -> ... }` instead of 
+/// guards allows arbitrary expressions in conditions while 
+/// still producing exhaustive matches.
 ///
 fn generate_if_branches(
   branches: List(#(Option(String), Int, List(parser.Node))),
@@ -1438,6 +1253,12 @@ fn generate_if_branches(
   )
 }
 
+/// Else-if chains become nested case expressions where each
+/// False branch contains the next condition's case. This
+/// recursive structure mirrors the if/else-if/else chain
+/// naturally, producing correctly indented and exhaustive Gleam 
+/// code for any chain length.
+///
 fn generate_if_branches_recursive(
   branches: List(#(Option(String), Int, List(parser.Node))),
   indent: Int,
@@ -1529,33 +1350,24 @@ fn generate_if_branches_recursive(
   }
 }
 
-/// Transforms slot references in conditions.
-/// - `slot` alone → `slot != ""`
-/// - `slot.header` → `slot_header != ""`
-/// Other expressions pass through unchanged.
+/// Template authors write `l-if="slot"` or `l-if="slot.header"`
+/// to conditionally render based on slot content, but slots are 
+/// String parameters in generated code. Transforming these to 
+/// emptiness checks lets authors use intuitive slot references 
+/// without knowing the String representation.
 ///
 fn transform_slot_condition(condition: String) -> String {
-  let trimmed = string.trim(condition)
-  case trimmed {
-    // Exact match for "slot" - transform to emptiness check
+  case string.trim(condition) {
     "slot" -> "slot != \"\""
-    // Check for slot.X pattern
-    _ -> {
-      case string.starts_with(trimmed, "slot.") {
-        True -> {
-          // Transform slot.header to slot_header != ""
-          let name = string.drop_start(trimmed, 5)
-          "slot_" <> to_field_name(name) <> " != \"\""
-        }
-        False -> condition
-      }
-    }
+    "slot." <> name -> "slot_" <> to_field_name(name) <> " != \"\""
+    _ -> condition
   }
 }
 
-/// Generates code for a list of nodes. Maps over each node
-/// and concatenates the generated code with appropriate
-/// indentation.
+/// Convenience entry point for node code generation when no 
+/// loop variables are in scope (i.e., at the top level). Avoids 
+/// passing an empty set through every call site that doesn't 
+/// involve l-for loops.
 ///
 fn generate_nodes_code(
   nodes: List(Node),
@@ -1574,9 +1386,11 @@ fn generate_nodes_code(
   )
 }
 
-/// Generates code for a list of nodes with loop variable tracking.
-/// Loop variables are tracked so we can generate proper type conversions
-/// for loop properties like loop.index (Int) and loop.first (Bool).
+/// Loop variables have properties like loop.index (Int) and
+/// loop.first (Bool) that need type conversion when used in 
+/// string concatenation. Threading the set of active loop 
+/// variables through code generation lets the emitter insert 
+/// the right conversion calls.
 ///
 fn generate_nodes_code_with_loop_vars(
   nodes: List(Node),
@@ -1600,9 +1414,11 @@ fn generate_nodes_code_with_loop_vars(
   |> string.join("")
 }
 
-/// Generates code for a single AST node. Handles all node
-/// types: text, variables, slots, conditionals, loops,
-/// and component invocations.
+/// Each AST node type maps to a different code generation
+/// strategy — text becomes string literals, variables become 
+/// runtime.display calls, slots become parameter references, 
+/// and components become function calls. Exhaustive pattern 
+/// matching ensures every node type produces valid Gleam code.
 ///
 fn generate_node_code_with_loop_vars(
   node: Node,
@@ -1622,7 +1438,7 @@ fn generate_node_code_with_loop_vars(
 
     parser.VariableNode(expr, _line) -> {
       // Check if this is a loop variable property that needs type conversion
-      let converted_expr = convert_loop_var_expr(expr, loop_vars)
+      let converted_expr = convert_loop_var_expr(expr)
       pad <> "<> " <> converted_expr <> "\n"
     }
 
@@ -1894,9 +1710,12 @@ fn generate_node_code_with_loop_vars(
   }
 }
 
-/// Generates component attribute code. Separates props from
-/// HTML attributes, generates defaults for missing props,
-/// and builds the attributes list for pass-through.
+/// Component attributes serve dual roles: some are props
+/// (passed as function arguments) and others are HTML
+/// attributes (passed through to the root element). Separating 
+/// them here ensures props reach the render function while HTML 
+/// attributes flow to the DOM, with type-appropriate defaults 
+/// for omitted props.
 ///
 fn generate_component_attrs(
   component_name: String,
@@ -2052,59 +1871,16 @@ fn generate_component_attrs(
             <> transform_style_list(value)
             <> "))",
           )
-        // Generate data-l-* attributes for event handlers
-        lexer.LmOn(event, modifiers, handler, line) -> {
-          case dict.get(handler_lookup, #(event, handler, line)) {
-            Ok(handler_id) -> {
-              // Build list of attributes: handler ID + modifiers
-              let handler_attr =
-                "runtime.Attribute(\"data-l-"
-                <> event
-                <> "\", \""
-                <> handler_id
-                <> "\")"
-
-              // Add modifier attributes
-              let modifier_attrs =
-                modifiers
-                |> list.map(fn(m) {
-                  // Handle debounce specially: .debounce or .debounce-300
-                  case string.starts_with(m, "debounce") {
-                    True -> {
-                      let value = case string.split(m, "-") {
-                        ["debounce", ms] -> ms
-                        _ -> "150"
-                        // Default debounce
-                      }
-                      "runtime.Attribute(\"data-l-debounce\", \""
-                      <> value
-                      <> "\")"
-                    }
-                    False ->
-                      "runtime.Attribute(\"data-l-" <> m <> "\", \"true\")"
-                  }
-                })
-                |> string.join(", ")
-
-              case modifier_attrs {
-                "" -> Ok(handler_attr)
-                _ -> Ok(handler_attr <> ", " <> modifier_attrs)
-              }
-            }
-            Error(_) -> Error(Nil)
-          }
-        }
-        // l-model generates data-l-input attribute + value binding is handled separately
-        lexer.LmModel(prop, line) -> {
-          let handler_str = prop <> " = $value"
-          case dict.get(handler_lookup, #("input", handler_str, line)) {
-            Ok(handler_id) ->
-              Ok(
-                "runtime.Attribute(\"data-l-input\", \"" <> handler_id <> "\")",
-              )
-            Error(_) -> Error(Nil)
-          }
-        }
+        lexer.LmOn(event, modifiers, handler, line) ->
+          generate_handler_attr_code(
+            event,
+            modifiers,
+            handler,
+            line,
+            handler_lookup,
+          )
+        lexer.LmModel(prop, line) ->
+          generate_model_attr_code(prop, line, handler_lookup)
         lexer.LmIf(_, _)
         | lexer.LmElseIf(_, _)
         | lexer.LmElse
@@ -2120,9 +1896,11 @@ fn generate_component_attrs(
   #(props_code, extra_attrs_code)
 }
 
-/// Returns a default value for a Gleam type. Handles Bool,
-/// String, Int, Float, Option, and List types with sensible
-/// defaults.
+/// When a parent template omits a component prop, the generated 
+/// code still needs a valid value to compile. Type-based 
+/// defaults (False for Bool, "" for String, etc.) provide the 
+/// safest zero-value semantics so partial component usage 
+/// doesn't cause compile errors.
 ///
 fn default_for_type(type_str: String) -> String {
   case type_str {
@@ -2130,26 +1908,17 @@ fn default_for_type(type_str: String) -> String {
     "String" -> "\"\""
     "Int" -> "0"
     "Float" -> "0.0"
-    _ -> {
-      // For Option types, default to None
-      case string.starts_with(type_str, "Option(") {
-        True -> "None"
-        False -> {
-          // For List types, default to empty list
-          case string.starts_with(type_str, "List(") {
-            True -> "[]"
-            // Unknown type - can't provide a default
-            False -> "todo"
-          }
-        }
-      }
-    }
+    "Option(" <> _ -> "None"
+    "List(" <> _ -> "[]"
+    _ -> "todo"
   }
 }
 
-/// Checks if an attribute name is an HTML boolean attribute.
-/// These attributes render only their name when true, not
-/// name="value" pairs.
+/// HTML boolean attributes (disabled, checked, etc.) must be 
+/// rendered differently — their presence alone means true, and 
+/// they should be omitted entirely when false. Identifying them 
+/// lets the generator emit BoolAttribute instead of Attribute 
+/// for correct rendering behavior.
 ///
 fn is_html_boolean_attribute(name: String) -> Bool {
   case name {
@@ -2182,7 +1951,11 @@ fn is_html_boolean_attribute(name: String) -> Bool {
   }
 }
 
-/// Generates named slot arguments with loop variable tracking.
+/// Named slots provided by the parent must become arguments in 
+/// the component's render call, and any expected slots not 
+/// provided must be filled with empty strings. Loop variable 
+/// tracking is threaded through because slot content can 
+/// reference variables from enclosing l-for loops.
 ///
 fn generate_component_named_slots_with_loop_vars(
   component_name: String,
@@ -2252,8 +2025,11 @@ fn generate_component_named_slots_with_loop_vars(
   provided_slots_code <> missing_slots_code
 }
 
-/// Generates code for element attributes. Converts lexer
-/// attributes to runtime calls for rendering HTML attributes.
+/// Element attributes (unlike component attributes) are all
+/// HTML attributes — there's no prop/attribute split. They
+/// still need conversion to runtime constructors because
+/// different attribute types (string, expression, boolean,
+/// class, style, handler) have different rendering logic.
 ///
 fn generate_element_attrs_code(
   attrs: List(lexer.ComponentAttr),
@@ -2298,61 +2074,16 @@ fn generate_element_attrs_code(
                 <> transform_style_list(value)
                 <> "))",
               )
-            // Generate data-l-* attributes for event handlers
-            lexer.LmOn(event, modifiers, handler, line) -> {
-              case dict.get(handler_lookup, #(event, handler, line)) {
-                Ok(handler_id) -> {
-                  // Build list of attributes: handler ID + modifiers
-                  let handler_attr =
-                    "runtime.Attribute(\"data-l-"
-                    <> event
-                    <> "\", \""
-                    <> handler_id
-                    <> "\")"
-
-                  // Add modifier attributes
-                  let modifier_attrs =
-                    modifiers
-                    |> list.map(fn(m) {
-                      // Handle debounce specially: .debounce or .debounce-300
-                      case string.starts_with(m, "debounce") {
-                        True -> {
-                          let value = case string.split(m, "-") {
-                            ["debounce", ms] -> ms
-                            _ -> "150"
-                            // Default debounce
-                          }
-                          "runtime.Attribute(\"data-l-debounce\", \""
-                          <> value
-                          <> "\")"
-                        }
-                        False ->
-                          "runtime.Attribute(\"data-l-" <> m <> "\", \"true\")"
-                      }
-                    })
-                    |> string.join(", ")
-
-                  case modifier_attrs {
-                    "" -> Ok(handler_attr)
-                    _ -> Ok(handler_attr <> ", " <> modifier_attrs)
-                  }
-                }
-                Error(_) -> Error(Nil)
-              }
-            }
-            // l-model generates both value binding and data-l-input attribute
-            lexer.LmModel(prop, line) -> {
-              let handler_str = prop <> " = $value"
-              case dict.get(handler_lookup, #("input", handler_str, line)) {
-                Ok(handler_id) ->
-                  Ok(
-                    "runtime.Attribute(\"data-l-input\", \""
-                    <> handler_id
-                    <> "\")",
-                  )
-                Error(_) -> Error(Nil)
-              }
-            }
+            lexer.LmOn(event, modifiers, handler, line) ->
+              generate_handler_attr_code(
+                event,
+                modifiers,
+                handler,
+                line,
+                handler_lookup,
+              )
+            lexer.LmModel(prop, line) ->
+              generate_model_attr_code(prop, line, handler_lookup)
             // l-* control flow attributes are handled elsewhere
             lexer.LmIf(_, _)
             | lexer.LmElseIf(_, _)
@@ -2385,9 +2116,71 @@ fn generate_element_attrs_code(
   }
 }
 
-/// Checks if a tag is an HTML void element. Void elements like
-/// img, br, and input are self-closing and cannot contain
-/// children in HTML.
+/// l-on:* handlers become data-l-{event} attributes that the
+/// client-side JS runtime reads to wire up event listeners.
+/// Looking up the handler ID from the pre-built map ensures the 
+/// attribute value matches the server-side dispatch function. 
+/// Shared by both component and element codegen.
+///
+fn generate_handler_attr_code(
+  event: String,
+  modifiers: List(String),
+  handler: String,
+  line: Int,
+  handler_lookup: HandlerLookup,
+) -> Result(String, Nil) {
+  use handler_id <- result.try(
+    dict.get(handler_lookup, #(event, handler, line))
+    |> result.replace_error(Nil),
+  )
+  let handler_attr =
+    "runtime.Attribute(\"data-l-" <> event <> "\", \"" <> handler_id <> "\")"
+
+  let modifier_attrs =
+    modifiers
+    |> list.map(fn(m) {
+      case string.starts_with(m, "debounce") {
+        True -> {
+          let value = case string.split(m, "-") {
+            ["debounce", ms] -> ms
+            _ -> "150"
+          }
+          "runtime.Attribute(\"data-l-debounce\", \"" <> value <> "\")"
+        }
+        False -> "runtime.Attribute(\"data-l-" <> m <> "\", \"true\")"
+      }
+    })
+    |> string.join(", ")
+
+  case modifier_attrs {
+    "" -> Ok(handler_attr)
+    _ -> Ok(handler_attr <> ", " <> modifier_attrs)
+  }
+}
+
+/// l-model is syntactic sugar for l-on:input with $value
+/// assignment. The generated attribute uses data-l-input with 
+/// the same handler ID that the desugared handler received 
+/// during collection, maintaining consistency between markup 
+/// and dispatch.
+///
+fn generate_model_attr_code(
+  prop: String,
+  line: Int,
+  handler_lookup: HandlerLookup,
+) -> Result(String, Nil) {
+  let handler_str = prop <> " = $value"
+  case dict.get(handler_lookup, #("input", handler_str, line)) {
+    Ok(handler_id) ->
+      Ok("runtime.Attribute(\"data-l-input\", \"" <> handler_id <> "\")")
+    Error(_) -> Error(Nil)
+  }
+}
+
+/// Void elements must be rendered as self-closing tags (<img />)
+/// rather than with a closing tag (</img>), which would be 
+/// invalid HTML. Identifying them here lets the element code 
+/// generator emit the correct syntax per HTML specification.
 ///
 fn is_void_element(tag: String) -> Bool {
   case tag {
@@ -2409,8 +2202,11 @@ fn is_void_element(tag: String) -> Bool {
   }
 }
 
-/// Generates code for base attributes. Converts lexer
-/// attributes to runtime Attribute constructors.
+/// Base attributes from the component's root element need to be 
+/// passed to runtime.merge_attributes alongside the 
+/// parent-provided attributes. Converting them to runtime
+/// constructors here lets the merge happen at render time so 
+/// parent attributes can override component defaults.
 ///
 fn generate_base_attrs_code(attrs: List(lexer.ComponentAttr)) -> String {
   let items =
@@ -2453,9 +2249,10 @@ fn generate_base_attrs_code(attrs: List(lexer.ComponentAttr)) -> String {
   "[" <> string.join(items, ", ") <> "]"
 }
 
-/// Checks if the template contains an @attributes directive.
-/// Recursively searches the AST to find explicit attribute
-/// injection points.
+/// Components without an explicit @attributes directive get
+/// automatic injection into the root element. Checking for
+/// existing directives first prevents double injection when the 
+/// author has already placed @attributes where they want it.
 ///
 fn has_attributes_node(nodes: List(Node)) -> Bool {
   list.any(nodes, fn(node) {
@@ -2472,17 +2269,21 @@ fn has_attributes_node(nodes: List(Node)) -> Bool {
   })
 }
 
-/// Injects @attributes into the first HTML element. For
-/// components without explicit attribute placement, adds
-/// attributes to the root element automatically.
+/// Most component authors expect parent attributes to land on 
+/// the root element without having to write @attributes
+/// explicitly. Auto-injecting into the first element provides 
+/// this convenient default behavior while still allowing 
+/// explicit placement when needed.
 ///
 fn inject_attributes_into_first_element(nodes: List(Node)) -> List(Node) {
   inject_attributes_helper(nodes, False).0
 }
 
-/// Recursive helper for attribute injection. Searches for the
-/// first HTML tag and inserts an AttributesNode after its
-/// opening bracket and existing attributes.
+/// The first HTML element may be inside a conditional or loop, 
+/// not at the top level. Recursing into control flow nodes with 
+/// an "injected" flag ensures we find the first element 
+/// regardless of nesting, and the flag prevents injecting into 
+/// more than one branch.
 ///
 fn inject_attributes_helper(
   nodes: List(Node),
@@ -2552,9 +2353,11 @@ fn inject_attributes_helper(
   }
 }
 
-/// Injects @attributes into branches of an if/elseif/else.
-/// Processes each branch body looking for the first HTML tag
-/// and returns updated branches with injection status.
+/// When a component's root element is inside a conditional,
+/// each branch may have its own first element. Injecting into 
+/// all branches ensures attributes are applied regardless of 
+/// which branch renders, while the injected flag propagates to 
+/// avoid duplicate injection.
 ///
 fn inject_attributes_into_branches(
   branches: List(#(Option(String), Int, List(Node))),
@@ -2571,29 +2374,31 @@ fn inject_attributes_into_branches(
   }
 }
 
-/// Finds the first HTML tag in text and extracts attributes.
-/// Returns the text before attributes, parsed attributes,
-/// and the closing portion of the tag.
+/// Text nodes from the lexer may contain raw HTML tags that
+/// weren't parsed as elements (e.g., in static content). To 
+/// inject @attributes, we need to find the first tag in the 
+/// text, split it open, and insert the attributes node between 
+/// the tag name and closing bracket.
 ///
 fn find_first_tag_and_extract_attrs(
   text: String,
 ) -> Option(#(String, List(lexer.ComponentAttr), String)) {
   case string.split_once(text, "<") {
     Error(_) -> None
-    Ok(#(before_tag, after_open)) -> {
-      case parse_tag_content(after_open) {
-        Some(#(tag_name, attrs, closing)) -> {
-          Some(#(before_tag <> "<" <> tag_name <> " ", attrs, closing))
-        }
-        None -> None
-      }
-    }
+    Ok(#(before_tag, after_open)) ->
+      parse_tag_content(after_open)
+      |> option.map(fn(parsed) {
+        let #(tag_name, attrs, closing) = parsed
+        #(before_tag <> "<" <> tag_name <> " ", attrs, closing)
+      })
   }
 }
 
-/// Parses the content after an opening angle bracket. Extracts
-/// the tag name and parses any attributes before the closing
-/// bracket.
+/// After splitting on '<', we need to distinguish real element 
+/// tags from closing tags, comments, and doctype declarations. 
+/// Parsing the tag name and any existing attributes lets 
+/// inject_attributes_helper preserve the original attributes 
+/// during injection.
 ///
 fn parse_tag_content(
   content: String,
@@ -2612,9 +2417,10 @@ fn parse_tag_content(
   }
 }
 
-/// Reads characters until whitespace or tag delimiter. Used
-/// to extract tag names and unquoted attribute values from
-/// HTML content.
+/// Tag names and unquoted attribute values are terminated by
+/// whitespace or tag delimiters (>, /). A shared extraction
+/// function avoids duplicating this character-by-character
+/// scanning logic across multiple parsing contexts.
 ///
 fn take_until_space_or_close(input: String, acc: String) -> #(String, String) {
   case string.pop_grapheme(input) {
@@ -2628,9 +2434,11 @@ fn take_until_space_or_close(input: String, acc: String) -> #(String, String) {
   }
 }
 
-/// Parses HTML attributes from an opening tag. Continues until
-/// the closing bracket, accumulating string and boolean
-/// attributes.
+/// Existing attributes on the root element must be preserved
+/// as base attributes for runtime.merge_attributes. Parsing
+/// them into structured ComponentAttr values lets the generator 
+/// emit correct merge code that combines the element's own 
+/// attributes with parent-provided ones.
 ///
 fn parse_html_attributes(
   input: String,
@@ -2641,12 +2449,7 @@ fn parse_html_attributes(
   case string.pop_grapheme(input) {
     Error(_) -> #(list.reverse(acc), "")
     Ok(#(">", rest)) -> #(list.reverse(acc), ">" <> rest)
-    Ok(#("/", rest)) -> {
-      case string.first(rest) {
-        Ok(">") -> #(list.reverse(acc), "/" <> rest)
-        _ -> #(list.reverse(acc), "/" <> rest)
-      }
-    }
+    Ok(#("/", rest)) -> #(list.reverse(acc), "/" <> rest)
     Ok(#(_, _)) -> {
       case parse_single_html_attribute(input) {
         Some(#(attr, remaining)) ->
@@ -2661,9 +2464,11 @@ fn parse_html_attributes(
   }
 }
 
-/// Parses a single HTML attribute. Handles name="value" with
-/// single or double quotes, unquoted values, and boolean
-/// attributes without values.
+/// HTML allows multiple attribute syntax forms (double-quoted,
+/// single-quoted, unquoted, valueless boolean). Supporting all 
+/// of them here means component authors can write natural HTML 
+/// without being constrained to a single quoting style for 
+/// their root element attributes.
 ///
 fn parse_single_html_attribute(
   input: String,
@@ -2700,9 +2505,11 @@ fn parse_single_html_attribute(
   }
 }
 
-/// Extracts an attribute name from input. Reads until
-/// whitespace, equals sign, or tag delimiter is encountered,
-/// returning the name and remaining input.
+/// Attribute names are terminated by =, whitespace, or tag
+/// delimiters. Extracting the name as a separate step lets the 
+/// caller decide how to handle the value based on what follows 
+/// — an = means a valued attribute, anything else means a 
+/// boolean attribute.
 ///
 fn take_attr_name(input: String, acc: String) -> #(String, String) {
   case string.pop_grapheme(input) {
@@ -2716,9 +2523,10 @@ fn take_attr_name(input: String, acc: String) -> #(String, String) {
   }
 }
 
-/// Reads characters until a specific stop character is found.
-/// Used to extract quoted attribute values by reading until
-/// the closing quote.
+/// Quoted attribute values can contain any character except
+/// their closing quote. A parameterized stop character lets 
+/// this single function handle both single-quoted and 
+/// double-quoted values without duplication.
 ///
 fn take_until_char(
   input: String,
@@ -2736,9 +2544,11 @@ fn take_until_char(
   }
 }
 
-/// Converts a name to a valid Gleam field name. Replaces
-/// dashes, colons, and spaces with underscores and converts
-/// to snake_case.
+/// HTML attribute names use dashes and colons (data-value,
+/// aria-label) but Gleam identifiers require snake_case.
+/// Normalizing here ensures generated field names are valid 
+/// Gleam regardless of the naming conventions used in the 
+/// template markup.
 ///
 fn to_field_name(name: String) -> String {
   name
@@ -2748,15 +2558,17 @@ fn to_field_name(name: String) -> String {
   |> to_snake_case
 }
 
-/// Converts a string to snake_case. Inserts underscores before
-/// uppercase letters and lowercases them, then strips any
-/// leading underscores.
+/// Component names and slot names may use PascalCase or
+/// camelCase in templates, but Gleam conventions and module
+/// paths require snake_case. Converting here ensures generated 
+/// identifiers follow Gleam naming rules and match expected 
+/// module paths.
 ///
 fn to_snake_case(input: String) -> String {
   input
   |> string.to_graphemes
   |> list.fold("", fn(acc, char) {
-    case is_uppercase(char) {
+    case string_util.is_uppercase_letter(char) {
       True -> acc <> "_" <> string.lowercase(char)
       False -> acc <> char
     }
@@ -2764,9 +2576,10 @@ fn to_snake_case(input: String) -> String {
   |> strip_leading_underscores
 }
 
-/// Removes leading underscores from a string. Used to clean
-/// up snake_case conversions that produce strings starting
-/// with underscores.
+/// Snake_case conversion of names starting with uppercase (e.g., 
+/// "MyComponent" -> "_my_component") produces a leading 
+/// underscore. Stripping it prevents generating identifiers that 
+/// Gleam would interpret as unused variables.
 ///
 fn strip_leading_underscores(input: String) -> String {
   case input {
@@ -2775,18 +2588,11 @@ fn strip_leading_underscores(input: String) -> String {
   }
 }
 
-/// Checks if a character is uppercase. Compares the character
-/// to its uppercase version to determine case, excluding
-/// characters that are the same in both cases.
-///
-fn is_uppercase(char: String) -> Bool {
-  let upper = string.uppercase(char)
-  char == upper && char != string.lowercase(char)
-}
-
-/// Escapes a string for use in generated Gleam code. Handles
-/// backslashes, quotes, newlines, carriage returns, and tabs
-/// with proper escape sequences.
+/// Template text nodes are emitted as Gleam string literals, so 
+/// characters that have special meaning in Gleam strings
+/// (backslashes, quotes, newlines) must be escaped. Without 
+/// this, a template containing a literal backslash or quote
+/// would produce syntactically invalid generated code.
 ///
 fn escape_gleam_string(input: String) -> String {
   input
@@ -2797,9 +2603,11 @@ fn escape_gleam_string(input: String) -> String {
   |> string.replace("\t", "\\t")
 }
 
-/// Generates a module alias for a component import. Converts
-/// the component name to a valid Gleam identifier by replacing
-/// colons and dashes with underscores.
+/// Component names like "ui:button" or "nav-bar" use characters 
+/// invalid in Gleam identifiers. The alias (e.g., 
+/// components_ui_button) provides a safe identifier for the 
+/// import statement that the generated render calls can 
+/// reference.
 ///
 fn component_module_alias(name: String) -> String {
   "components_"
@@ -2808,34 +2616,42 @@ fn component_module_alias(name: String) -> String {
   |> string.replace("-", "_")
 }
 
-/// Transforms string literals in a :class list to use the
-/// runtime.class() helper. Converts ["foo", #("bar", cond)]
-/// to [runtime.class("foo"), #("bar", cond)].
+/// Bare strings in :class lists are always-on class names, but 
+/// the runtime expects uniform #(String, Bool) tuples. Wrapping 
+/// them with runtime.class() (which returns #(name, True)) 
+/// normalizes the list so build_classes can process all 
+/// entries uniformly.
 ///
 fn transform_class_list(value: String) -> String {
   transform_list_strings(value, "runtime.class")
 }
 
-/// Transforms string literals in a :style list to use the
-/// runtime.style() helper. Converts ["foo", #("bar", cond)]
-/// to [runtime.style("foo"), #("bar", cond)].
+/// Same pattern as transform_class_list but for :style. Bare 
+/// strings in :style lists are always-on style rules, and 
+/// wrapping with runtime.style() normalizes them into
+/// #(String, Bool) tuples for uniform processing by 
+/// build_styles.
 ///
 fn transform_style_list(value: String) -> String {
   transform_list_strings(value, "runtime.style")
 }
 
-/// Transforms bare string literals at the top level of a list
-/// to wrap them with a helper function. Tuples and nested
-/// expressions like #("x", cond) are left unchanged.
+/// Only top-level string literals need wrapping — strings
+/// inside tuples like #("foo", cond) are already part of the 
+/// expected format. Tracking nesting depth ensures only the 
+/// right strings get wrapped while leaving tuple contents 
+/// untouched.
 ///
 fn transform_list_strings(value: String, wrapper: String) -> String {
   let chars = string.to_graphemes(value)
   transform_list_chars(chars, wrapper, 0, False, "", "")
 }
 
-/// Recursive helper for transforming list string literals.
-/// Tracks nesting depth and string state to identify top-level
-/// string literals that need wrapping with the helper function.
+/// Character-by-character processing is needed because the list 
+/// expression can contain escaped quotes, nested parentheses, 
+/// and commas inside tuples. A simple regex or split-based 
+/// approach would misidentify boundaries in expressions like 
+/// ["a\"b", #("c", True)].
 ///
 fn transform_list_chars(
   chars: List(String),
@@ -2963,17 +2779,21 @@ fn transform_list_chars(
   }
 }
 
-/// Converts any expression to a displayable string representation.
-/// Uses runtime.display() which handles all types (String, Bool, Int, etc.)
-/// and escapes HTML.
+/// Template variables can be any type (String, Int, Bool, etc.) 
+/// but string concatenation requires strings. runtime.display() 
+/// handles type conversion and HTML escaping in one call, 
+/// preventing XSS while supporting non-string types without 
+/// explicit conversion.
 ///
-fn convert_loop_var_expr(expr: String, _loop_vars: Set(String)) -> String {
+fn convert_loop_var_expr(expr: String) -> String {
   "runtime.display(" <> expr <> ")"
 }
 
-/// Converts an expression for raw output (no escaping).
-/// Loop properties are converted to strings, but regular data is
-/// passed through directly (assumed to already be a String).
+/// Raw variables ({!! expr !!}) skip HTML escaping for cases
+/// like pre-rendered HTML. Loop properties (loop.index,
+/// loop.first) still need type conversion since they're Int/Bool,
+/// but regular raw variables are assumed to be strings already 
+/// and are passed through directly.
 ///
 fn convert_loop_var_expr_raw(expr: String, loop_vars: Set(String)) -> String {
   case get_loop_property(expr, loop_vars) {
@@ -2982,27 +2802,25 @@ fn convert_loop_var_expr_raw(expr: String, loop_vars: Set(String)) -> String {
   }
 }
 
-/// Checks if an expression is accessing a loop variable property.
-/// Returns Some(#(loop_var_name, property_name)) if it is, None otherwise.
+/// Loop variable properties (loop.index, loop.first, etc.) have
+/// non-String types that need conversion for string output. 
+/// Identifying them by checking if the expression root is a 
+/// known loop variable lets the generator insert the right 
+/// conversion without a full type system.
 ///
 fn get_loop_property(
   expr: String,
   loop_vars: Set(String),
 ) -> Option(#(String, String)) {
   case string.split_once(expr, ".") {
-    Ok(#(root, rest)) -> {
-      case set.contains(loop_vars, root) {
-        True -> {
-          // It's a loop variable, extract just the immediate property
-          let property = case string.split_once(rest, ".") {
-            Ok(#(prop, _)) -> prop
-            Error(_) -> rest
-          }
-          Some(#(root, property))
-        }
-        False -> None
-      }
-    }
     Error(_) -> None
+    Ok(#(root, rest)) -> {
+      use <- bool.guard(!set.contains(loop_vars, root), None)
+      let property = case string.split_once(rest, ".") {
+        Ok(#(prop, _)) -> prop
+        Error(_) -> rest
+      }
+      Some(#(root, property))
+    }
   }
 }

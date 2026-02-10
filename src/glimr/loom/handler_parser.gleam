@@ -1,12 +1,18 @@
 //// Handler Expression Parser
 ////
-//// Parses l-on:* handler expressions into structured data for code generation.
-//// Handles single assignments, tuple destructuring, and expression extraction.
+//// Template event handlers (l-on:click, l-on:input) are
+//// written as inline assignment strings that need to become
+//// typed Gleam code. This module bridges that gap by parsing
+//// handler expressions into structured data so the code
+//// generator can emit correct function bodies with proper prop 
+//// assignments, tuple destructuring, and special variable 
+//// injection ($value, $key, etc.).
 ////
-//// Examples:
-////   "count = count + 1"
-////   "count = counter.increment(count)"
-////   "#(count, total) = counter.increment_both(count, total)"
+//// *Example:*
+////
+//// "count = count + 1"
+//// "count = counter.increment(count)"
+//// "#(count, total) = counter.increment_both(count, total)"
 ////
 
 import gleam/int
@@ -16,11 +22,16 @@ import gleam/result
 import gleam/string
 import glimr/loom/lexer
 import glimr/loom/parser.{type Node, type Template}
+import glimr/utils/string as string_util
 
 // ------------------------------------------------------------- Public Types
 
-/// Represents a parsed handler expression.
-/// Contains the targets (props to update) and the expression to evaluate.
+/// Code generation needs to know which props a handler updates 
+/// and what expression produces the new values. Bundling event 
+/// metadata (name, modifiers), assignment targets, and the 
+/// expression together lets the generator emit a complete 
+/// handler function in one pass without re-parsing the original 
+/// string.
 ///
 pub type Handler {
   Handler(
@@ -39,7 +50,12 @@ pub type Handler {
   )
 }
 
-/// Errors that can occur during handler parsing
+/// Handler expressions are user-authored strings that can
+/// easily contain syntax mistakes. Structured error variants
+/// let the compiler point to the exact problem — a missing
+/// assignment operator, an empty target, or malformed tuple
+/// syntax — so the user can fix their template quickly.
+///
 pub type HandlerError {
   /// Handler string doesn't contain an assignment
   MissingAssignment(handler: String, line: Int)
@@ -53,11 +69,11 @@ pub type HandlerError {
 
 // ------------------------------------------------------------- Public Functions
 
-/// Parses a handler expression string into a Handler structure.
-/// Supports:
-/// - Simple: "count = count + 1"
-/// - Function call: "count = counter.increment(count)"
-/// - Tuple destructure: "#(count, total) = counter.increment_both(count, total)"
+/// Entry point for turning a raw handler string into a
+/// structured Handler. Validates that the expression contains a 
+/// well-formed assignment before the code generator attempts to 
+/// emit Gleam code from it, catching authoring mistakes at 
+/// compile time.
 ///
 pub fn parse(
   event: String,
@@ -67,38 +83,39 @@ pub fn parse(
 ) -> Result(Handler, HandlerError) {
   let handler_str = string.trim(handler_str)
 
-  // Find the assignment operator
-  case find_assignment(handler_str) {
-    Error(_) -> Error(MissingAssignment(handler_str, line))
-    Ok(#(target_part, expr_part)) -> {
-      let target_part = string.trim(target_part)
-      let expr_part = string.trim(expr_part)
+  use #(target_part, expr_part) <- result.try(
+    find_assignment(handler_str)
+    |> result.replace_error(MissingAssignment(handler_str, line)),
+  )
 
-      case target_part, expr_part {
-        "", _ -> Error(EmptyTarget(handler_str, line))
-        _, "" -> Error(EmptyExpression(handler_str, line))
-        _, _ -> {
-          // Parse targets (single or tuple)
-          case parse_targets(target_part) {
-            Error(_) -> Error(InvalidTupleSyntax(handler_str, line))
-            Ok(targets) ->
-              Ok(Handler(
-                event: event,
-                modifiers: modifiers,
-                targets: targets,
-                expression: expr_part,
-                original: handler_str,
-                line: line,
-              ))
-          }
-        }
-      }
+  let target_part = string.trim(target_part)
+  let expr_part = string.trim(expr_part)
+
+  case target_part, expr_part {
+    "", _ -> Error(EmptyTarget(handler_str, line))
+    _, "" -> Error(EmptyExpression(handler_str, line))
+    _, _ -> {
+      use targets <- result.try(
+        parse_targets(target_part)
+        |> result.replace_error(InvalidTupleSyntax(handler_str, line)),
+      )
+      Ok(Handler(
+        event: event,
+        modifiers: modifiers,
+        targets: targets,
+        expression: expr_part,
+        original: handler_str,
+        line: line,
+      ))
     }
   }
 }
 
-/// Checks if a handler expression uses any special variables.
-/// Returns the list of special variables used ($value, $checked, $key).
+/// Handler expressions can reference browser event data via
+/// special variables ($value, $checked, $key). The generated
+/// handler function needs to extract these from the JS event
+/// object and pass them as arguments, so we scan for their
+/// presence to know which extractions to emit.
 ///
 pub fn get_special_vars(handler: Handler) -> List(String) {
   let expr = handler.expression
@@ -108,27 +125,35 @@ pub fn get_special_vars(handler: Handler) -> List(String) {
   |> maybe_add_var(expr, "$key")
 }
 
-/// Generates a unique handler ID from event and index.
+/// Multiple handlers of the same event type can exist in a
+/// single template. A deterministic ID based on event name and 
+/// index ensures each generated handler function has a unique 
+/// name that the client-side runtime can resolve.
 ///
 pub fn handler_id(event: String, index: Int) -> String {
   "handle_" <> event <> "_" <> int.to_string(index)
 }
 
-/// Collects all handlers from a template AST.
-/// Returns a list of (handler_id, Handler) tuples with parsed handler info.
-/// l-model attributes are converted to input handlers.
+/// The code generator needs a flat list of all handlers in the 
+/// template to emit handler functions and a dispatch map. 
+/// Walking the AST here centralizes that collection so the 
+/// generator doesn't need its own traversal logic. l-model 
+/// attributes are desugared into input handlers to keep the 
+/// generator's output uniform.
 ///
 pub fn collect_handlers(
   template: Template,
 ) -> Result(List(#(String, Handler)), HandlerError) {
-  case collect_handlers_from_nodes(template.nodes, [], 0) {
-    Ok(#(handlers, _)) -> Ok(list.reverse(handlers))
-    Error(e) -> Error(e)
-  }
+  collect_handlers_from_nodes(template.nodes, [], 0)
+  |> result.map(fn(pair) { list.reverse(pair.0) })
 }
 
-/// Recursively collects handlers from nodes.
-/// Returns (accumulated handlers, next index) without reversing.
+// ------------------------------------------------------------- Private Functions
+
+/// Handlers can appear at any depth in the node tree, so a 
+/// recursive walk is needed. The index counter threads through 
+/// the traversal to ensure every handler gets a globally unique 
+/// ID regardless of nesting depth.
 ///
 fn collect_handlers_from_nodes(
   nodes: List(Node),
@@ -138,16 +163,21 @@ fn collect_handlers_from_nodes(
   case nodes {
     [] -> Ok(#(acc, index))
     [node, ..rest] -> {
-      case collect_handlers_from_node(node, acc, index) {
-        Error(e) -> Error(e)
-        Ok(#(new_acc, new_index)) ->
-          collect_handlers_from_nodes(rest, new_acc, new_index)
-      }
+      use #(new_acc, new_index) <- result.try(collect_handlers_from_node(
+        node,
+        acc,
+        index,
+      ))
+      collect_handlers_from_nodes(rest, new_acc, new_index)
     }
   }
 }
 
-/// Collects handlers from a single node.
+/// Each node type contributes handlers differently — elements 
+/// and components carry attributes directly, while control flow 
+/// nodes (if, each) contain handlers in their child branches. 
+/// Pattern matching here keeps the per-node dispatch clear and 
+/// exhaustive.
 ///
 fn collect_handlers_from_node(
   node: Node,
@@ -155,20 +185,14 @@ fn collect_handlers_from_node(
   index: Int,
 ) -> Result(#(List(#(String, Handler)), Int), HandlerError) {
   case node {
-    parser.ElementNode(_, attrs, children) -> {
-      case collect_handlers_from_attrs(attrs, acc, index) {
-        Error(e) -> Error(e)
-        Ok(#(new_acc, new_index)) ->
-          collect_handlers_from_nodes(children, new_acc, new_index)
-      }
-    }
-
-    parser.ComponentNode(_, attrs, children) -> {
-      case collect_handlers_from_attrs(attrs, acc, index) {
-        Error(e) -> Error(e)
-        Ok(#(new_acc, new_index)) ->
-          collect_handlers_from_nodes(children, new_acc, new_index)
-      }
+    parser.ElementNode(_, attrs, children)
+    | parser.ComponentNode(_, attrs, children) -> {
+      use #(new_acc, new_index) <- result.try(collect_handlers_from_attrs(
+        attrs,
+        acc,
+        index,
+      ))
+      collect_handlers_from_nodes(children, new_acc, new_index)
     }
 
     parser.IfNode(branches) ->
@@ -191,7 +215,10 @@ fn collect_handlers_from_node(
   }
 }
 
-/// Collects handlers from if node branches.
+/// IfNode branches each contain independent node trees that may 
+/// hold handlers. Iterating through all branches ensures 
+/// handlers inside conditional blocks are still collected and 
+/// assigned unique IDs.
 ///
 fn collect_handlers_from_branches(
   branches: List(#(Option(String), Int, List(Node))),
@@ -201,16 +228,21 @@ fn collect_handlers_from_branches(
   case branches {
     [] -> Ok(#(acc, index))
     [#(_, _, body), ..rest] -> {
-      case collect_handlers_from_nodes(body, acc, index) {
-        Error(e) -> Error(e)
-        Ok(#(new_acc, new_index)) ->
-          collect_handlers_from_branches(rest, new_acc, new_index)
-      }
+      use #(new_acc, new_index) <- result.try(collect_handlers_from_nodes(
+        body,
+        acc,
+        index,
+      ))
+      collect_handlers_from_branches(rest, new_acc, new_index)
     }
   }
 }
 
-/// Collects handlers from attribute list.
+/// This is where handlers are actually discovered — in the
+/// attribute lists of elements and components. l-on:*
+/// attributes are parsed into Handler structs, and l-model is 
+/// desugared into an equivalent l-on:input so both produce 
+/// uniform output for the code generator.
 ///
 fn collect_handlers_from_attrs(
   attrs: List(lexer.ComponentAttr),
@@ -222,32 +254,21 @@ fn collect_handlers_from_attrs(
     [attr, ..rest] -> {
       case attr {
         lexer.LmOn(event, modifiers, handler_str, line) -> {
-          case parse(event, modifiers, handler_str, line) {
-            Error(e) -> Error(e)
-            Ok(handler) -> {
-              let id = handler_id(event, index)
-              collect_handlers_from_attrs(
-                rest,
-                [#(id, handler), ..acc],
-                index + 1,
-              )
-            }
-          }
+          use handler <- result.try(parse(event, modifiers, handler_str, line))
+          let id = handler_id(event, index)
+          collect_handlers_from_attrs(rest, [#(id, handler), ..acc], index + 1)
         }
 
+        // l-model is sugar for l-on:input="prop = $value"
         lexer.LmModel(prop, line) -> {
-          // l-model is sugar for l-on:input="prop = $value"
-          case parse("input", [], prop <> " = $value", line) {
-            Error(e) -> Error(e)
-            Ok(handler) -> {
-              let id = handler_id("input", index)
-              collect_handlers_from_attrs(
-                rest,
-                [#(id, handler), ..acc],
-                index + 1,
-              )
-            }
-          }
+          use handler <- result.try(parse(
+            "input",
+            [],
+            prop <> " = $value",
+            line,
+          ))
+          let id = handler_id("input", index)
+          collect_handlers_from_attrs(rest, [#(id, handler), ..acc], index + 1)
         }
 
         // Other attributes don't contain handlers
@@ -257,15 +278,21 @@ fn collect_handlers_from_attrs(
   }
 }
 
-// ------------------------------------------------------------- Private Functions
-
-/// Finds the assignment operator (=) at the top level (not inside parens/brackets).
-/// Returns the target and expression parts.
+/// Handler expressions like "count = inc(count)" contain an 
+/// assignment, but the expression side may also contain = 
+/// inside parenthesized function calls or comparisons. 
+/// Splitting only at the top-level = avoids misinterpreting
+/// nested equality or named arguments as the assignment.
 ///
 fn find_assignment(input: String) -> Result(#(String, String), Nil) {
   find_assignment_loop(input, 0, 0, "")
 }
 
+/// Walks the string character by character tracking nesting
+/// depth so that = inside parentheses or brackets is
+/// skipped. Also distinguishes = (assignment) from == (equality)
+/// to avoid false splits on comparisons.
+///
 fn find_assignment_loop(
   input: String,
   paren_depth: Int,
@@ -323,8 +350,10 @@ fn find_assignment_loop(
   }
 }
 
-/// Parses the target part of an assignment.
-/// Returns a list of target variable names.
+/// Handlers can update one prop or multiple props via tuple
+/// destructuring. Returning a list of targets in both cases
+/// gives the code generator a uniform interface — it always
+/// iterates over targets regardless of cardinality.
 ///
 fn parse_targets(target: String) -> Result(List(String), Nil) {
   let target = string.trim(target)
@@ -340,14 +369,19 @@ fn parse_targets(target: String) -> Result(List(String), Nil) {
   }
 }
 
-/// Parses tuple destructuring like "#(count, total)".
+/// Tuple destructuring lets a single handler expression update 
+/// multiple props at once (e.g. a function returning 
+/// #(count, total)). Parsing the #() syntax here validates that 
+/// each element is a valid identifier before the code generator 
+/// tries to emit assignments for them.
 ///
 fn parse_tuple_targets(target: String) -> Result(List(String), Nil) {
   // Remove "#(" prefix and ")" suffix
-  let inner =
+  let inner = {
     target
     |> string.drop_start(2)
     |> string.trim
+  }
 
   case string.ends_with(inner, ")") {
     False -> Error(Nil)
@@ -367,52 +401,26 @@ fn parse_tuple_targets(target: String) -> Result(List(String), Nil) {
   }
 }
 
-/// Checks if a string is a valid Gleam identifier.
+/// Assignment targets become variable names in generated Gleam 
+/// code. Validating identifier syntax here catches typos and 
+/// invalid characters at parse time rather than producing 
+/// broken generated code that fails later with confusing 
+/// compiler errors.
 ///
 fn is_valid_identifier(s: String) -> Bool {
-  case string.first(s) {
-    Error(_) -> False
-    Ok(first) -> {
-      // Must start with lowercase letter or underscore
-      case is_lowercase_letter(first) || first == "_" {
-        False -> False
-        True -> {
-          // Rest must be alphanumeric or underscore
-          s
-          |> string.to_graphemes
-          |> list.drop(1)
-          |> list.all(fn(c) {
-            is_lowercase_letter(c)
-            || is_uppercase_letter(c)
-            || result.is_ok(int.parse(c))
-            || c == "_"
-          })
-        }
-      }
+  case string.to_graphemes(s) {
+    [] -> False
+    [first, ..rest] -> {
+      { first == "_" || string_util.is_lowercase_letter(first) }
+      && list.all(rest, string_util.is_alphanumeric)
     }
   }
 }
 
-fn is_lowercase_letter(c: String) -> Bool {
-  case c {
-    "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" ->
-      True
-    "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z" ->
-      True
-    _ -> False
-  }
-}
-
-fn is_uppercase_letter(c: String) -> Bool {
-  case c {
-    "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" ->
-      True
-    "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" ->
-      True
-    _ -> False
-  }
-}
-
+/// Conditionally includes a special variable only if it appears 
+/// in the expression, so the generated handler function doesn't 
+/// extract unused values from the JS event object.
+///
 fn maybe_add_var(vars: List(String), expr: String, var: String) -> List(String) {
   case string.contains(expr, var) {
     True -> [var, ..vars]
