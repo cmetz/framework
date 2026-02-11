@@ -34,7 +34,7 @@ const debounceTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
 export class LoomLive {
   private container: HTMLElement;
   private module: string;
-  private initialProps: string;
+  private token: string;
   private wsUrlOverride: string | null;
   private socket: WebSocket | null = null;
   private reconnectAttempts = 0;
@@ -45,7 +45,7 @@ export class LoomLive {
   constructor(container: HTMLElement) {
     this.container = container;
     this.module = container.dataset.lLive!;
-    this.initialProps = container.dataset.lProps || "{}";
+    this.token = container.dataset.lToken!;
     this.wsUrlOverride = container.dataset.lWs || null;
 
     this.connect();
@@ -109,7 +109,7 @@ export class LoomLive {
       JSON.stringify({
         type: "init",
         module: this.module,
-        props: this.initialProps,
+        token: this.token,
       }),
     );
     this.initialized = true;

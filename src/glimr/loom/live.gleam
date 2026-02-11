@@ -9,7 +9,10 @@
 //// WebSocket text frames.
 ////
 
+import dot_env/env
+import gleam/bit_array
 import gleam/bool
+import gleam/crypto
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
 import gleam/http/request.{type Request as HttpRequest}
@@ -17,6 +20,7 @@ import gleam/http/response.{type Response as HttpResponse}
 import gleam/json
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import glimr/loom/live_socket
 import glimr/loom/loom.{
   type ClientEvent, type SocketMessage, ClientEvent, SpecialVars,
@@ -49,7 +53,7 @@ pub type WsState {
 /// initialization.
 ///
 pub type InitMessage {
-  InitMessage(module: String, props: String)
+  InitMessage(module: String, token: String)
 }
 
 // ------------------------------------------------------------- Public Functions
@@ -167,8 +171,27 @@ fn handle_init(
   case parse_init_message(text) {
     Error(_) -> mist.continue(state)
     Ok(init) -> {
-      use <- bool.guard(!registry.is_valid_module(init.module), mist.stop())
-      case live_socket.start(state.reply_subject, init.module, init.props) {
+      let result = {
+        use <- bool.guard(!registry.is_valid_module(init.module), Error(Nil))
+
+        let assert Ok(app_key) = env.get_string("APP_KEY")
+        use payload_bits <- result.try(
+          crypto.verify_signed_message(init.token, <<app_key:utf8>>)
+          |> result.replace_error(Nil),
+        )
+        use payload <- result.try(
+          bit_array.to_string(payload_bits) |> result.replace_error(Nil),
+        )
+        use #(token_module, props_json) <- result.try(
+          string.split_once(payload, ":") |> result.replace_error(Nil),
+        )
+        use <- bool.guard(token_module != init.module, Error(Nil))
+
+        live_socket.start(state.reply_subject, init.module, props_json)
+        |> result.replace_error(Nil)
+      }
+
+      case result {
         Ok(socket) -> mist.continue(WsState(..state, socket: Some(socket)))
         Error(_) -> mist.stop()
       }
@@ -202,9 +225,9 @@ fn parse_init_message(text: String) -> Result(InitMessage, Nil) {
   let decoder = {
     use msg_type <- decode.field("type", decode.string)
     use module <- decode.field("module", decode.string)
-    use props <- decode.field("props", decode.string)
+    use token <- decode.field("token", decode.string)
     case msg_type {
-      "init" -> decode.success(InitMessage(module: module, props: props))
+      "init" -> decode.success(InitMessage(module: module, token: token))
       _ -> decode.failure(InitMessage("", ""), "init")
     }
   }

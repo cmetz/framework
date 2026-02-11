@@ -1,5 +1,76 @@
+import dot_env/env
+import gleam/bit_array
+import gleam/crypto
+import gleam/string
 import gleeunit/should
 import glimr/loom/runtime
+
+// ------------------------------------------------------------- inject_live_wrapper Tests
+
+fn test_html() -> String {
+  "<html><head></head><body><p>Hello</p></body></html>"
+}
+
+pub fn inject_live_wrapper_emits_data_l_token_test() {
+  let assert Ok(_) = env.set("APP_KEY", "test-secret-key")
+  let result = runtime.inject_live_wrapper(test_html(), "counter", "{\"count\":0}")
+
+  string.contains(result, "data-l-token=\"")
+  |> should.be_true
+
+  string.contains(result, "data-l-props")
+  |> should.be_false
+}
+
+pub fn inject_live_wrapper_token_is_verifiable_test() {
+  let secret = "test-secret-key"
+  let assert Ok(_) = env.set("APP_KEY", secret)
+  let result =
+    runtime.inject_live_wrapper(test_html(), "counter", "{\"count\":0}")
+
+  // Extract the token from data-l-token="..."
+  let assert Ok(#(_, after_token)) = string.split_once(result, "data-l-token=\"")
+  let assert Ok(#(token, _)) = string.split_once(after_token, "\"")
+
+  // Verify the token with the same secret
+  let assert Ok(payload_bits) =
+    crypto.verify_signed_message(token, <<secret:utf8>>)
+  let assert Ok(payload) = bit_array.to_string(payload_bits)
+
+  payload
+  |> should.equal("counter:{\"count\":0}")
+}
+
+pub fn inject_live_wrapper_token_binds_module_test() {
+  let secret = "test-secret-key"
+  let assert Ok(_) = env.set("APP_KEY", secret)
+  let result =
+    runtime.inject_live_wrapper(test_html(), "my_module", "{}")
+
+  let assert Ok(#(_, after_token)) = string.split_once(result, "data-l-token=\"")
+  let assert Ok(#(token, _)) = string.split_once(after_token, "\"")
+
+  let assert Ok(payload_bits) =
+    crypto.verify_signed_message(token, <<secret:utf8>>)
+  let assert Ok(payload) = bit_array.to_string(payload_bits)
+
+  // Payload starts with the module name
+  string.starts_with(payload, "my_module:")
+  |> should.be_true
+}
+
+pub fn inject_live_wrapper_token_rejected_with_wrong_key_test() {
+  let assert Ok(_) = env.set("APP_KEY", "correct-key")
+  let result =
+    runtime.inject_live_wrapper(test_html(), "counter", "{\"count\":0}")
+
+  let assert Ok(#(_, after_token)) = string.split_once(result, "data-l-token=\"")
+  let assert Ok(#(token, _)) = string.split_once(after_token, "\"")
+
+  // Verification with wrong key should fail
+  crypto.verify_signed_message(token, <<"wrong-key":utf8>>)
+  |> should.be_error
+}
 
 // ------------------------------------------------------------- build_classes Tests
 

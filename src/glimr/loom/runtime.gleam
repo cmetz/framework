@@ -10,6 +10,7 @@
 ////
 
 import dot_env/env
+import gleam/crypto
 import gleam/int
 import gleam/list
 import gleam/string
@@ -269,14 +270,21 @@ pub fn inject_live_wrapper(
   props_json: String,
 ) -> String {
   let ws_url = live_ws_url()
+  let assert Ok(app_key) = env.get_string("APP_KEY")
+  let payload = module_name <> ":" <> props_json
+
+  let token = {
+    crypto.sign_message(<<payload:utf8>>, <<app_key:utf8>>, crypto.Sha256)
+  }
+
   let open_div =
     "<div data-l-live=\""
     <> module_name
     <> "\" data-l-ws=\""
     <> ws_url
-    <> "\" data-l-props='"
-    <> props_json
-    <> "'>"
+    <> "\" data-l-token=\""
+    <> token
+    <> "\">"
 
   // Inject <script defer> before </head> for early fetch
   let html = inject_before_head_close(html)
