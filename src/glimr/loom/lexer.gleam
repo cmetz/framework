@@ -739,11 +739,19 @@ fn parse_event_and_modifiers(input: String) -> #(String, List(String)) {
 /// Attribute values may use either quote style so users
 /// can pick whichever avoids escaping in their Gleam
 /// expressions. Both must be supported uniformly.
+/// Single quotes in the value are normalized to double
+/// quotes for valid Gleam string literals.
 ///
 fn parse_quoted_value(input: String) -> Result(#(String, String), Nil) {
   case input {
-    "\"" <> rest -> take_until_quote(rest, "\"", "")
-    "'" <> rest -> take_until_quote(rest, "'", "")
+    "\"" <> rest -> {
+      use #(value, remaining) <- result.try(take_until_quote(rest, "\"", ""))
+      Ok(#(normalize_quotes(value), remaining))
+    }
+    "'" <> rest -> {
+      use #(value, remaining) <- result.try(take_until_quote(rest, "'", ""))
+      Ok(#(normalize_quotes(value), remaining))
+    }
     _ -> Error(Nil)
   }
 }
