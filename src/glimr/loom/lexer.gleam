@@ -60,6 +60,8 @@ pub type ComponentAttr {
   LmOn(event: String, modifiers: List(String), handler: String, line: Int)
   /// l-model two-way binding (e.g., l-model="name")
   LmModel(prop: String, line: Int)
+  /// l-show conditional visibility (e.g., l-show="active")
+  LmShow(condition: String, line: Int)
 }
 
 /// Surfacing specific error variants allows the compiler
@@ -483,7 +485,7 @@ fn has_dynamic_attrs(attrs: List(ComponentAttr)) -> Bool {
   list.any(attrs, fn(attr) {
     case attr {
       LmIf(_, _) | LmElseIf(_, _) | LmElse | LmFor(_, _, _, _) -> True
-      LmOn(_, _, _, _) | LmModel(_, _) -> True
+      LmOn(_, _, _, _) | LmModel(_, _) | LmShow(_, _) -> True
       ClassAttr(_) | StyleAttr(_) | ExprAttr(_, _) -> True
       _ -> False
     }
@@ -587,6 +589,14 @@ fn parse_element_attrs(
       case parse_lm_model_attr(rest, line) {
         Ok(#(attr, remaining)) ->
           parse_element_attrs(remaining, [attr, ..acc], line)
+        Error(_) -> #(list.reverse(acc), input)
+      }
+    }
+
+    "l-show=" <> rest -> {
+      case parse_quoted_value(rest) {
+        Ok(#(condition, remaining)) ->
+          parse_element_attrs(remaining, [LmShow(condition, line), ..acc], line)
         Error(_) -> #(list.reverse(acc), input)
       }
     }
@@ -868,6 +878,18 @@ fn parse_component_attrs(
       case parse_lm_model_attr(rest, line) {
         Ok(#(attr, remaining)) ->
           parse_component_attrs(remaining, [attr, ..acc], line)
+        Error(_) -> #(list.reverse(acc), input)
+      }
+    }
+
+    "l-show=" <> rest -> {
+      case parse_quoted_value(rest) {
+        Ok(#(condition, remaining)) ->
+          parse_component_attrs(
+            remaining,
+            [LmShow(condition, line), ..acc],
+            line,
+          )
         Error(_) -> #(list.reverse(acc), input)
       }
     }

@@ -1953,7 +1953,8 @@ fn generate_component_attrs(
         | lexer.LmElse
         | lexer.LmFor(_, _, _, _)
         | lexer.LmOn(_, _, _, _)
-        | lexer.LmModel(_, _) -> Error(Nil)
+        | lexer.LmModel(_, _)
+        | lexer.LmShow(_, _) -> Error(Nil)
       }
     })
     |> string.join("")
@@ -2050,7 +2051,8 @@ fn generate_component_attrs(
         lexer.LmIf(_, _)
         | lexer.LmElseIf(_, _)
         | lexer.LmElse
-        | lexer.LmFor(_, _, _, _) -> Error(Nil)
+        | lexer.LmFor(_, _, _, _)
+        | lexer.LmShow(_, _) -> Error(Nil)
       }
     })
 
@@ -2204,6 +2206,23 @@ fn generate_element_attrs_code(
   case attrs {
     [] -> ""
     _ -> {
+      // Pre-scan for l-show to merge with existing :style if present
+      let show_condition =
+        list.find_map(attrs, fn(attr) {
+          case attr {
+            lexer.LmShow(condition, _) -> Ok(condition)
+            _ -> Error(Nil)
+          }
+        })
+        |> option.from_result
+      let has_style_attr =
+        list.any(attrs, fn(attr) {
+          case attr {
+            lexer.StyleAttr(_) -> True
+            _ -> False
+          }
+        })
+
       let attr_items =
         attrs
         |> list.filter_map(fn(attr) {
@@ -2234,12 +2253,33 @@ fn generate_element_attrs_code(
                 <> transform_class_list(value)
                 <> "))",
               )
-            lexer.StyleAttr(value) ->
-              Ok(
-                "runtime.Attribute(\"style\", runtime.build_styles("
-                <> transform_style_list(value)
-                <> "))",
-              )
+            lexer.StyleAttr(value) -> {
+              let base =
+                "runtime.build_styles(" <> transform_style_list(value) <> ")"
+              case show_condition {
+                Some(cond) ->
+                  Ok(
+                    "runtime.Attribute(\"style\", "
+                    <> base
+                    <> " <> case "
+                    <> cond
+                    <> " { True -> \"\" False -> \"; display: none\" })",
+                  )
+                None ->
+                  Ok("runtime.Attribute(\"style\", " <> base <> ")")
+              }
+            }
+            lexer.LmShow(condition, _) ->
+              case has_style_attr {
+                // Already merged into StyleAttr above
+                True -> Error(Nil)
+                False ->
+                  Ok(
+                    "runtime.Attribute(\"style\", case "
+                    <> condition
+                    <> " { True -> \"\" False -> \"display: none\" })",
+                  )
+              }
             lexer.LmOn(event, modifiers, handler, line) ->
               generate_handler_attr_code(
                 event,
@@ -2408,7 +2448,8 @@ fn generate_base_attrs_code(attrs: List(lexer.ComponentAttr)) -> String {
         | lexer.LmElse
         | lexer.LmFor(_, _, _, _)
         | lexer.LmOn(_, _, _, _)
-        | lexer.LmModel(_, _) -> Error(Nil)
+        | lexer.LmModel(_, _)
+        | lexer.LmShow(_, _) -> Error(Nil)
       }
     })
 
@@ -3716,6 +3757,23 @@ fn generate_element_attrs_tree(
   attrs: List(lexer.ComponentAttr),
   handler_lookup: HandlerLookup,
 ) -> TreeAcc {
+  // Pre-scan for l-show to merge with existing :style if present
+  let show_condition =
+    list.find_map(attrs, fn(attr) {
+      case attr {
+        lexer.LmShow(condition, _) -> Ok(condition)
+        _ -> Error(Nil)
+      }
+    })
+    |> option.from_result
+  let has_style_attr =
+    list.any(attrs, fn(attr) {
+      case attr {
+        lexer.StyleAttr(_) -> True
+        _ -> False
+      }
+    })
+
   list.fold(attrs, acc, fn(acc, attr) {
     case attr {
       lexer.StringAttr(name, value) ->
@@ -3846,17 +3904,47 @@ fn generate_element_attrs_tree(
             ..acc,
             current_static: acc.current_static <> " style=\"",
           )
+        let base =
+          "runtime.escape(runtime.build_styles("
+          <> transform_style_list(value)
+          <> "))"
+        let dyn_expr = case show_condition {
+          Some(cond) ->
+            "loom.DynString("
+            <> base
+            <> " <> case "
+            <> cond
+            <> " { True -> \"\" False -> \"; display: none\" })"
+          None -> "loom.DynString(" <> base <> ")"
+        }
         TreeAcc(
           current_static: "\"",
-          dynamics: [
-            "loom.DynString(runtime.escape(runtime.build_styles("
-              <> transform_style_list(value)
-              <> ")))",
-            ..acc.dynamics
-          ],
+          dynamics: [dyn_expr, ..acc.dynamics],
           statics: [acc.current_static, ..acc.statics],
         )
       }
+      lexer.LmShow(condition, _) ->
+        case has_style_attr {
+          // Already merged into StyleAttr above
+          True -> acc
+          False -> {
+            let acc =
+              TreeAcc(
+                ..acc,
+                current_static: acc.current_static <> " style=\"",
+              )
+            TreeAcc(
+              current_static: "\"",
+              dynamics: [
+                "loom.DynString(case "
+                  <> condition
+                  <> " { True -> \"\" False -> \"display: none\" })",
+                ..acc.dynamics
+              ],
+              statics: [acc.current_static, ..acc.statics],
+            )
+          }
+        }
       // Control flow attributes are not element attributes
       lexer.LmIf(_, _)
       | lexer.LmElseIf(_, _)
