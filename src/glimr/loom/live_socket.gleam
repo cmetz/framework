@@ -123,11 +123,10 @@ fn handle_message(
 
       case handle_result {
         Ok(#(new_props_json, new_tree_json)) -> {
+          // Always send patch so the client can clear loading states,
+          // even when the diff is empty
           let diff = runtime.diff_tree_json(state.prev_tree_json, new_tree_json)
-          case diff {
-            "{}" -> Nil
-            _ -> process.send(state.reply_to, SendPatch(state.id, diff))
-          }
+          process.send(state.reply_to, SendPatch(state.id, diff))
           actor.continue(LiveSocketState(
             ..state,
             props_json: new_props_json,

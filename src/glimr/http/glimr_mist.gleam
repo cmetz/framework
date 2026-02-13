@@ -4,9 +4,9 @@
 //// it for real-time template updates. Rather than requiring 
 //// users to manually wire up WebSocket routes and static file 
 //// serving, this drop-in replacement for wisp_mist.handler 
-//// transparently intercepts the two Loom-specific paths 
-//// (/loom/ws and /loom.js) while passing everything else 
-//// through to wisp unchanged.
+//// transparently intercepts the Loom-specific paths
+//// (/loom/ws, /loom.js) while passing everything
+//// else through to wisp unchanged.
 ////
 
 import gleam/bytes_tree
@@ -49,8 +49,8 @@ pub fn handler(
     let path = request.path
 
     case path {
-      // Serve loom.js from framework's priv/static
-      "/loom.js" -> serve_loom_js()
+      // Serve Loom JS from framework's priv/static
+      "/loom.js" -> serve_loom_asset("loom.js", "application/javascript")
       // Check if this is a Loom Live WebSocket upgrade request
       "/loom/ws" ->
         case is_websocket_upgrade(request) {
@@ -65,30 +65,33 @@ pub fn handler(
 
 // ------------------------------------------------------------- Private Functions
 
-/// The Loom Live client-side JS is bundled with the framework,
-/// not the user's app. Serving it from the framework's priv
-/// directory means users don't need to copy or manage the
-/// script file — it's always available and in sync with the 
-/// framework version they're running.
+/// Loom's JS bundle is shipped with the framework, not the
+/// user's app. Serving it from the framework's priv directory
+/// means users don't need to copy or manage the file — it's
+/// always available and in sync with the framework version
+/// they're running.
 ///
-fn serve_loom_js() -> HttpResponse(mist.ResponseData) {
+fn serve_loom_asset(
+  filename: String,
+  content_type: String,
+) -> HttpResponse(mist.ResponseData) {
   let content = {
     use priv_path <- result.try(
       wisp.priv_directory("glimr") |> result.replace_error(Nil),
     )
-    simplifile.read(priv_path <> "/static/loom.js")
+    simplifile.read(priv_path <> "/static/" <> filename)
     |> result.replace_error(Nil)
   }
 
   case content {
-    Ok(js) ->
+    Ok(body) ->
       response.new(200)
-      |> response.set_header("content-type", "application/javascript")
-      |> response.set_body(mist.Bytes(bytes_tree.from_string(js)))
+      |> response.set_header("content-type", content_type)
+      |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
     Error(_) ->
       response.new(404)
       |> response.set_body(
-        mist.Bytes(bytes_tree.from_string("loom.js not found")),
+        mist.Bytes(bytes_tree.from_string(filename <> " not found")),
       )
   }
 }

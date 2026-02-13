@@ -1,7 +1,7 @@
 import gleam/list
 import gleeunit/should
 import glimr/loom/handler_parser.{
-  EmptyExpression, EmptyTarget, InvalidTupleSyntax, MissingAssignment,
+  EmptyExpression, EmptyTarget, InvalidTupleSyntax,
 }
 import glimr/loom/lexer
 import glimr/loom/parser.{type Template, ElementNode, Template, TextNode}
@@ -138,10 +138,12 @@ pub fn handler_id_test() {
 
 // ------------------------------------------------------------- Error Tests
 
-pub fn error_missing_assignment_test() {
-  let result = handler_parser.parse("click", [], "count + 1", 1)
+pub fn side_effect_expression_test() {
+  let assert Ok(handler) =
+    handler_parser.parse("click", [], "count + 1", 1)
 
-  result |> should.equal(Error(MissingAssignment("count + 1", 1)))
+  handler.targets |> should.equal([])
+  handler.expression |> should.equal("count + 1")
 }
 
 pub fn error_empty_target_test() {
@@ -163,11 +165,14 @@ pub fn error_invalid_tuple_syntax_test() {
   result |> should.equal(Error(InvalidTupleSyntax("#(count, 123) = fn()", 1)))
 }
 
-pub fn error_missing_assignment_in_unbalanced_parens_test() {
+pub fn side_effect_unbalanced_parens_test() {
   // The = is inside unbalanced parens, so no valid assignment found
-  let result = handler_parser.parse("click", [], "#(count = fn()", 1)
+  // This is treated as a side-effect expression
+  let assert Ok(handler) =
+    handler_parser.parse("click", [], "#(count = fn()", 1)
 
-  result |> should.equal(Error(MissingAssignment("#(count = fn()", 1)))
+  handler.targets |> should.equal([])
+  handler.expression |> should.equal("#(count = fn()")
 }
 
 // ------------------------------------------------------------- Edge Cases

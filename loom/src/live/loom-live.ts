@@ -20,6 +20,17 @@ import { applyDiff, reconstruct } from "@/live/tree";
 const debounceTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
 
 /**
+ * Tracks the original state of elements that are in a loading
+ * state so they can be restored when the server responds.
+ */
+interface LoadingState {
+  originalText: string | null;
+  wasDisabled: boolean;
+  shownIndicators: HTMLElement[];
+  hiddenSiblings: { el: HTMLElement; originalDisplay: string }[];
+}
+
+/**
  * Each live container on the page gets its own LoomLive
  * instance that manages event wiring and DOM patching, but
  * shares a single WebSocket connection via LoomSocket. The
@@ -36,6 +47,7 @@ export class LoomLive {
   private pendingEvents: EventPayload[] = [];
   private statics: any | null = null;
   private dynamics: any[] | null = null;
+  private loadingElements = new Map<HTMLElement, LoadingState>();
 
   constructor(container: HTMLElement, loomSocket: LoomSocket) {
     this.container = container;
@@ -49,6 +61,7 @@ export class LoomLive {
 
     this.sendJoin();
     this.attachEventListeners();
+    this.hideLoadingIndicators();
   }
 
   /**
@@ -109,8 +122,10 @@ export class LoomLive {
         // Don't apply to DOM — server-rendered HTML is already there.
         this.statics = message.s!;
         this.dynamics = message.d!;
+        this.clearLoadingStates();
         break;
       case "patch":
+        this.clearLoadingStates();
         if (this.statics && this.dynamics) {
           // Apply diff to dynamics, reconstruct, and morph
           applyDiff(this.dynamics, message.d);
@@ -119,6 +134,7 @@ export class LoomLive {
         }
         break;
       case "error":
+        this.clearLoadingStates();
         console.error("[Loom] Server error:", message.error);
         break;
       default:
@@ -161,6 +177,7 @@ export class LoomLive {
     });
 
     this.attachEventListeners();
+    this.hideLoadingIndicators();
     restoreFocus(this.container, saved);
   }
 
@@ -206,7 +223,7 @@ export class LoomLive {
       if (!handlerId) return;
 
       element.addEventListener(eventType, (e) => {
-        this.handleEvent(e, eventType, handlerId, modifiers);
+        this.handleEvent(e, eventType, handlerId, modifiers, element);
       });
     });
   }
@@ -217,12 +234,19 @@ export class LoomLive {
    * and routing through debounce in one place keeps the per-event
    * -type listener code minimal — each listener only needs to
    * call this with its handler ID.
+   *
+   * For click and submit events, loading state is applied to the
+   * element: an "l-loading" CSS class is added, the element is
+   * auto-disabled (unless it has l-no-disable), and the text is
+   * swapped if l-loading-text is present. Loading state is cleared
+   * when the server responds with a patch.
    */
   private handleEvent(
     e: Event,
     eventType: string,
     handlerId: string,
     modifiers: Modifiers,
+    element: HTMLElement,
   ): void {
     if (modifiers.prevent) e.preventDefault();
     if (modifiers.stop) e.stopPropagation();
@@ -236,10 +260,130 @@ export class LoomLive {
     };
 
     if (modifiers.shouldDebounce) {
-      this.debouncedSend(e.target as Element, payload, modifiers.debounce);
+      this.debouncedSend(element, payload, modifiers.debounce);
     } else {
+      // Apply loading state for discrete actions (click, submit)
+      if (eventType === "click" || eventType === "submit") {
+        this.applyLoadingState(element);
+      }
       this.sendEvent(payload);
     }
+  }
+
+  /**
+   * Marks an element as loading during a server round-trip.
+   * Adds the "l-loading" CSS class, auto-disables click/submit
+   * elements (unless l-no-disable is present), and swaps text
+   * content if l-loading-text is specified.
+   *
+   * If the element has children with l-loading or data-l-loading
+   * attributes, those children are shown and their non-loading
+   * siblings are hidden via inline display styles.
+   */
+  private applyLoadingState(element: HTMLElement): void {
+    const wasDisabled = element.hasAttribute("disabled");
+
+    // Add loading CSS class
+    element.classList.add("l-loading");
+
+    // Auto-disable unless opted out
+    if (!element.hasAttribute("l-no-disable")) {
+      element.setAttribute("disabled", "");
+    }
+
+    // Swap text if l-loading-text is specified
+    const loadingText = element.getAttribute("l-loading-text");
+    let originalText: string | null = null;
+    if (loadingText !== null) {
+      originalText = element.textContent;
+      element.textContent = loadingText;
+    }
+
+    // Show l-loading children and hide their non-loading siblings
+    const shownIndicators: HTMLElement[] = [];
+    const hiddenSiblings: { el: HTMLElement; originalDisplay: string }[] = [];
+
+    if (loadingText === null) {
+      for (const child of Array.from(element.children) as HTMLElement[]) {
+        if (
+          child.hasAttribute("l-loading") ||
+          child.hasAttribute("data-l-loading")
+        ) {
+          child.style.display = "";
+          shownIndicators.push(child);
+        }
+      }
+
+      // Only hide non-loading siblings if there were loading indicators
+      if (shownIndicators.length > 0) {
+        for (const child of Array.from(element.children) as HTMLElement[]) {
+          if (
+            !child.hasAttribute("l-loading") &&
+            !child.hasAttribute("data-l-loading")
+          ) {
+            hiddenSiblings.push({
+              el: child,
+              originalDisplay: child.style.display,
+            });
+            child.style.display = "none";
+          }
+        }
+      }
+    }
+
+    this.loadingElements.set(element, {
+      originalText,
+      wasDisabled,
+      shownIndicators,
+      hiddenSiblings,
+    });
+  }
+
+  /**
+   * Restores all elements from their loading state. Called when
+   * the server responds with a patch, trees, or error message.
+   * Removes the "l-loading" class, restores disabled state,
+   * restores original text, and reverses child visibility toggles.
+   */
+  private clearLoadingStates(): void {
+    this.loadingElements.forEach((state, element) => {
+      element.classList.remove("l-loading");
+
+      // Only remove disabled if we added it
+      if (!state.wasDisabled) {
+        element.removeAttribute("disabled");
+      }
+
+      // Restore original text if it was swapped
+      if (state.originalText !== null) {
+        element.textContent = state.originalText;
+      }
+
+      // Re-hide loading indicators
+      state.shownIndicators.forEach((el) => {
+        el.style.display = "none";
+      });
+
+      // Restore hidden siblings
+      state.hiddenSiblings.forEach(({ el, originalDisplay }) => {
+        el.style.display = originalDisplay;
+      });
+    });
+    this.loadingElements.clear();
+  }
+
+  /**
+   * Hides all elements with l-loading or data-l-loading attributes
+   * inside this container. Called on init and after every patch so
+   * that loading indicators stay hidden until a loading state is
+   * triggered.
+   */
+  private hideLoadingIndicators(): void {
+    this.container
+      .querySelectorAll("[l-loading], [data-l-loading]")
+      .forEach((el) => {
+        (el as HTMLElement).style.display = "none";
+      });
   }
 
   /**

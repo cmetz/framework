@@ -57,8 +57,6 @@ pub type Handler {
 /// syntax — so the user can fix their template quickly.
 ///
 pub type HandlerError {
-  /// Handler string doesn't contain an assignment
-  MissingAssignment(handler: String, line: Int)
   /// Empty target in assignment
   EmptyTarget(handler: String, line: Int)
   /// Empty expression in assignment
@@ -70,10 +68,9 @@ pub type HandlerError {
 // ------------------------------------------------------------- Public Functions
 
 /// Entry point for turning a raw handler string into a
-/// structured Handler. Validates that the expression contains a 
-/// well-formed assignment before the code generator attempts to 
-/// emit Gleam code from it, catching authoring mistakes at 
-/// compile time.
+/// structured Handler. Supports both assignment expressions
+/// (prop = expr) and side-effect expressions (expr) that
+/// execute code without updating props.
 ///
 pub fn parse(
   event: String,
@@ -83,30 +80,46 @@ pub fn parse(
 ) -> Result(Handler, HandlerError) {
   let handler_str = string.trim(handler_str)
 
-  use #(target_part, expr_part) <- result.try(
-    find_assignment(handler_str)
-    |> result.replace_error(MissingAssignment(handler_str, line)),
-  )
+  case find_assignment(handler_str) {
+    // Assignment expression: "count = count + 1"
+    Ok(#(target_part, expr_part)) -> {
+      let target_part = string.trim(target_part)
+      let expr_part = string.trim(expr_part)
 
-  let target_part = string.trim(target_part)
-  let expr_part = string.trim(expr_part)
+      case target_part, expr_part {
+        "", _ -> Error(EmptyTarget(handler_str, line))
+        _, "" -> Error(EmptyExpression(handler_str, line))
+        _, _ -> {
+          use targets <- result.try(
+            parse_targets(target_part)
+            |> result.replace_error(InvalidTupleSyntax(handler_str, line)),
+          )
+          Ok(Handler(
+            event: event,
+            modifiers: modifiers,
+            targets: targets,
+            expression: expr_part,
+            original: handler_str,
+            line: line,
+          ))
+        }
+      }
+    }
 
-  case target_part, expr_part {
-    "", _ -> Error(EmptyTarget(handler_str, line))
-    _, "" -> Error(EmptyExpression(handler_str, line))
-    _, _ -> {
-      use targets <- result.try(
-        parse_targets(target_part)
-        |> result.replace_error(InvalidTupleSyntax(handler_str, line)),
-      )
-      Ok(Handler(
-        event: event,
-        modifiers: modifiers,
-        targets: targets,
-        expression: expr_part,
-        original: handler_str,
-        line: line,
-      ))
+    // Side-effect expression: "process.sleep(5)"
+    Error(_) -> {
+      case handler_str {
+        "" -> Error(EmptyExpression(handler_str, line))
+        _ ->
+          Ok(Handler(
+            event: event,
+            modifiers: modifiers,
+            targets: [],
+            expression: handler_str,
+            original: handler_str,
+            line: line,
+          ))
+      }
     }
   }
 }

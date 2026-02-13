@@ -599,14 +599,20 @@ fn generate_handle_function(
     params -> ",\n  " <> params
   }
 
+  // Build trailing params (props + special vars)
+  let trailing_params = case prop_params, special_params_str {
+    "", "" -> ""
+    params, "" -> ",\n  " <> params
+    "", special -> special
+    params, special -> ",\n  " <> params <> special
+  }
+
   "/// Handles an event by dispatching to the appropriate handler.\n"
   <> "/// Returns the updated prop values.\n"
   <> "///\n"
   <> "pub fn handle(\n"
-  <> "  handler_id: String,\n"
-  <> "  "
-  <> prop_params
-  <> special_params_str
+  <> "  handler_id: String"
+  <> trailing_params
   <> ",\n"
   <> ") -> "
   <> return_type
@@ -642,8 +648,10 @@ fn generate_handler_case(
     _ -> "#(" <> string.join(list.map(props, fn(p) { p.0 }), ", ") <> ")"
   }
 
-  // Generate the let binding(s)
+  // Generate the let binding(s) or side-effect expression
   let bindings = case h.targets {
+    // Side-effect: no assignment, just execute the expression
+    [] -> "      " <> expression <> "\n"
     [single] -> "      let " <> single <> " = " <> expression <> "\n"
     targets -> {
       let pattern = "#(" <> string.join(targets, ", ") <> ")"
@@ -749,14 +757,24 @@ fn generate_handle_json_function(
   <> "  }\n"
   <> "\n"
   <> "  case json.parse(props_json, decoder) {\n"
-  <> "    Ok(props) -> {\n"
-  <> "      // Call the typed handle function\n"
-  <> "      let result = "
-  <> handle_call
-  <> "\n"
-  <> "      // Encode result back to JSON\n"
-  <> result_encoder
-  <> "    }\n"
+  <> case template.props {
+    [] ->
+      "    Ok(_) -> {\n"
+      <> "      "
+      <> handle_call
+      <> "\n"
+      <> result_encoder
+      <> "    }\n"
+    _ ->
+      "    Ok(props) -> {\n"
+      <> "      // Call the typed handle function\n"
+      <> "      let result = "
+      <> handle_call
+      <> "\n"
+      <> "      // Encode result back to JSON\n"
+      <> result_encoder
+      <> "    }\n"
+  }
   <> "    Error(_) -> props_json  // Return unchanged on parse error\n"
   <> "  }\n"
   <> "}\n"
@@ -788,7 +806,9 @@ fn generate_render_json_function(
   <> "  }\n"
   <> "\n"
   <> "  case json.parse(props_json, decoder) {\n"
-  <> "    Ok(props) -> "
+  <> "    Ok("
+  <> case template.props { [] -> "_" _ -> "props" }
+  <> ") -> "
   <> render_call
   <> "\n"
   <> "    Error(_) -> \"<!-- JSON parse error -->\"  // Error fallback\n"
@@ -2735,6 +2755,7 @@ fn escape_gleam_string(input: String) -> String {
   |> string.replace("\t", "\\t")
 }
 
+
 /// Component names like "ui:button" or "nav-bar" use characters 
 /// invalid in Gleam identifiers. The alias (e.g., 
 /// components_ui_button) provides a safe identifier for the 
@@ -3058,7 +3079,9 @@ fn generate_tree_json_function(template: Template) -> String {
   <> "  }\n"
   <> "\n"
   <> "  case json.parse(props_json, decoder) {\n"
-  <> "    Ok(props) -> "
+  <> "    Ok("
+  <> case template.props { [] -> "_" _ -> "props" }
+  <> ") -> "
   <> render_tree_call
   <> "\n"
   <> "    Error(_) -> \"{}\"  // Error fallback\n"
