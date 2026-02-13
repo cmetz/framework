@@ -226,9 +226,15 @@ fn parse_nodes(
     }
 
     [lexer.Text(content), ..rest] -> {
-      // Text breaks a conditional chain
-      let acc = flush_pending_if(acc, pending_if)
-      parse_nodes(rest, [TextNode(content), ..acc], None)
+      // Whitespace-only text between l-if/l-else-if/l-else siblings
+      // should not break the conditional chain
+      case pending_if, string.trim(content) {
+        Some(_), "" -> parse_nodes(rest, acc, pending_if)
+        _, _ -> {
+          let acc = flush_pending_if(acc, pending_if)
+          parse_nodes(rest, [TextNode(content), ..acc], None)
+        }
+      }
     }
 
     [lexer.Variable(name, line), ..rest] -> {
@@ -682,8 +688,15 @@ fn parse_body(
 
     // Common content nodes
     [lexer.Text(content), ..rest] -> {
-      let acc = flush_pending_if(acc, pending_if)
-      parse_body(rest, context, [TextNode(content), ..acc], None)
+      // Whitespace-only text between l-if/l-else-if/l-else siblings
+      // should not break the conditional chain
+      case pending_if, string.trim(content) {
+        Some(_), "" -> parse_body(rest, context, acc, pending_if)
+        _, _ -> {
+          let acc = flush_pending_if(acc, pending_if)
+          parse_body(rest, context, [TextNode(content), ..acc], None)
+        }
+      }
     }
 
     [lexer.Variable(name, line), ..rest] -> {

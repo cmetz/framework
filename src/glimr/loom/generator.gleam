@@ -1366,6 +1366,7 @@ fn generate_if_branches(
     branches,
     indent,
     pad,
+    True,
     component_data,
     component_slots,
     loop_vars,
@@ -1383,11 +1384,18 @@ fn generate_if_branches_recursive(
   branches: List(#(Option(String), Int, List(parser.Node))),
   indent: Int,
   pad: String,
+  is_root: Bool,
   component_data: ComponentDataMap,
   component_slots: ComponentSlotMap,
   loop_vars: Set(String),
   handler_lookup: HandlerLookup,
 ) -> String {
+  // The root call is part of a string concatenation chain (<> case ...),
+  // but nested else-if calls are case arm values (case ... without <>).
+  let prefix = case is_root {
+    True -> "<> case "
+    False -> "case "
+  }
   case branches {
     [] -> ""
     [#(None, _line, body), ..] -> {
@@ -1401,7 +1409,12 @@ fn generate_if_branches_recursive(
           loop_vars,
           handler_lookup,
         )
-      pad <> "<> {\n" <> pad <> "  \"\"\n" <> body_code <> pad <> "}\n"
+      case is_root {
+        True ->
+          pad <> "<> {\n" <> pad <> "  \"\"\n" <> body_code <> pad <> "}\n"
+        False ->
+          pad <> "{\n" <> pad <> "  \"\"\n" <> body_code <> pad <> "}\n"
+      }
     }
     [#(Some(cond), _line, body), ..rest] -> {
       let transformed_cond = transform_slot_condition(cond)
@@ -1444,6 +1457,7 @@ fn generate_if_branches_recursive(
               rest,
               indent + 2,
               pad <> "    ",
+              False,
               component_data,
               component_slots,
               loop_vars,
@@ -1453,7 +1467,7 @@ fn generate_if_branches_recursive(
         }
       }
       pad
-      <> "<> case "
+      <> prefix
       <> transformed_cond
       <> " {\n"
       <> pad

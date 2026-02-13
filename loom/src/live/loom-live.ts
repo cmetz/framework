@@ -23,11 +23,19 @@ const debounceTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
  * Tracks the original state of elements that are in a loading
  * state so they can be restored when the server responds.
  */
-interface LoadingState {
-  originalText: string | null;
-  wasDisabled: boolean;
+interface ChildToggleState {
   shownIndicators: HTMLElement[];
   hiddenSiblings: { el: HTMLElement; originalDisplay: string }[];
+}
+
+interface RemoteLoadingState extends ChildToggleState {
+  element: HTMLElement;
+}
+
+interface LoadingState extends ChildToggleState {
+  originalText: string | null;
+  wasDisabled: boolean;
+  remoteTargets: RemoteLoadingState[];
 }
 
 /**
@@ -276,9 +284,13 @@ export class LoomLive {
    * elements (unless l-no-disable is present), and swaps text
    * content if l-loading-text is specified.
    *
-   * If the element has children with l-loading or data-l-loading
+   * If the element has children with l-loading (empty value)
    * attributes, those children are shown and their non-loading
    * siblings are hidden via inline display styles.
+   *
+   * If the element has an id, remote elements with
+   * l-loading="thatId" also enter loading state with the same
+   * child toggle behavior.
    */
   private applyLoadingState(element: HTMLElement): void {
     const wasDisabled = element.hasAttribute("disabled");
@@ -299,36 +311,26 @@ export class LoomLive {
       element.textContent = loadingText;
     }
 
-    // Show l-loading children and hide their non-loading siblings
-    const shownIndicators: HTMLElement[] = [];
-    const hiddenSiblings: { el: HTMLElement; originalDisplay: string }[] = [];
+    // Toggle l-loading indicator children (only when not using l-loading-text)
+    const { shownIndicators, hiddenSiblings } =
+      loadingText === null
+        ? this.toggleLoadingChildren(element)
+        : { shownIndicators: [], hiddenSiblings: [] };
 
-    if (loadingText === null) {
-      for (const child of Array.from(element.children) as HTMLElement[]) {
-        if (
-          child.hasAttribute("l-loading") ||
-          child.hasAttribute("data-l-loading")
-        ) {
-          child.style.display = "";
-          shownIndicators.push(child);
-        }
-      }
-
-      // Only hide non-loading siblings if there were loading indicators
-      if (shownIndicators.length > 0) {
-        for (const child of Array.from(element.children) as HTMLElement[]) {
-          if (
-            !child.hasAttribute("l-loading") &&
-            !child.hasAttribute("data-l-loading")
-          ) {
-            hiddenSiblings.push({
-              el: child,
-              originalDisplay: child.style.display,
-            });
-            child.style.display = "none";
-          }
-        }
-      }
+    // Activate remote loading targets linked by id
+    const remoteTargets: RemoteLoadingState[] = [];
+    const elementId = element.id;
+    if (elementId) {
+      this.container
+        .querySelectorAll(
+          `[l-loading="${elementId}"], [data-l-loading="${elementId}"]`,
+        )
+        .forEach((remote) => {
+          const remoteEl = remote as HTMLElement;
+          remoteEl.classList.add("l-loading");
+          const toggle = this.toggleLoadingChildren(remoteEl);
+          remoteTargets.push({ element: remoteEl, ...toggle });
+        });
     }
 
     this.loadingElements.set(element, {
@@ -336,7 +338,51 @@ export class LoomLive {
       wasDisabled,
       shownIndicators,
       hiddenSiblings,
+      remoteTargets,
     });
+  }
+
+  /**
+   * Shows direct children with l-loading="" (empty value) and
+   * hides their non-indicator siblings. Returns the toggle state
+   * so it can be reversed later.
+   */
+  private toggleLoadingChildren(element: HTMLElement): ChildToggleState {
+    const shownIndicators: HTMLElement[] = [];
+    const hiddenSiblings: { el: HTMLElement; originalDisplay: string }[] = [];
+
+    for (const child of Array.from(element.children) as HTMLElement[]) {
+      if (this.isLoadingIndicator(child)) {
+        child.style.display = "";
+        shownIndicators.push(child);
+      }
+    }
+
+    if (shownIndicators.length > 0) {
+      for (const child of Array.from(element.children) as HTMLElement[]) {
+        if (!this.isLoadingIndicator(child)) {
+          hiddenSiblings.push({
+            el: child,
+            originalDisplay: child.style.display,
+          });
+          child.style.display = "none";
+        }
+      }
+    }
+
+    return { shownIndicators, hiddenSiblings };
+  }
+
+  /**
+   * Returns true if an element is a loading indicator (l-loading
+   * or data-l-loading with empty value), as opposed to a remote
+   * loading scope (l-loading="someId" with a non-empty value).
+   */
+  private isLoadingIndicator(el: HTMLElement): boolean {
+    return (
+      el.getAttribute("l-loading") === "" ||
+      el.getAttribute("data-l-loading") === ""
+    );
   }
 
   /**
@@ -359,28 +405,37 @@ export class LoomLive {
         element.textContent = state.originalText;
       }
 
-      // Re-hide loading indicators
-      state.shownIndicators.forEach((el) => {
-        el.style.display = "none";
-      });
+      this.reverseChildToggle(state);
 
-      // Restore hidden siblings
-      state.hiddenSiblings.forEach(({ el, originalDisplay }) => {
-        el.style.display = originalDisplay;
+      // Reverse remote targets
+      state.remoteTargets.forEach((remote) => {
+        remote.element.classList.remove("l-loading");
+        this.reverseChildToggle(remote);
       });
     });
     this.loadingElements.clear();
   }
 
+  private reverseChildToggle(state: ChildToggleState): void {
+    state.shownIndicators.forEach((el) => {
+      el.style.display = "none";
+    });
+    state.hiddenSiblings.forEach(({ el, originalDisplay }) => {
+      el.style.display = originalDisplay;
+    });
+  }
+
   /**
-   * Hides all elements with l-loading or data-l-loading attributes
-   * inside this container. Called on init and after every patch so
-   * that loading indicators stay hidden until a loading state is
-   * triggered.
+   * Hides all loading indicator elements (l-loading or
+   * data-l-loading with empty value) inside this container.
+   * Called on init and after every patch so that indicators stay
+   * hidden until a loading state is triggered. Elements with a
+   * non-empty value like l-loading="someId" are remote scopes,
+   * not indicators, and are left visible.
    */
   private hideLoadingIndicators(): void {
     this.container
-      .querySelectorAll("[l-loading], [data-l-loading]")
+      .querySelectorAll('[l-loading=""], [data-l-loading=""]')
       .forEach((el) => {
         (el as HTMLElement).style.display = "none";
       });
