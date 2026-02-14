@@ -1898,13 +1898,12 @@ fn generate_component_attrs(
     Ok(data) -> list.map(data.props, fn(p) { p.0 })
   }
 
-  // Get explicitly provided props from expression attributes AND boolean attributes that match prop names
+  // Get explicitly provided props from expression, string, and boolean attributes that match prop names
   let explicit_props =
     attributes
     |> list.filter_map(fn(attr) {
       case attr {
-        lexer.ExprAttr(name, _) -> {
-          // Expression attribute is a prop only if it matches an expected prop name
+        lexer.ExprAttr(name, _) | lexer.StringAttr(name, _) -> {
           let field_name = to_field_name(name)
           case list.contains(expected_prop_names, field_name) {
             True -> Ok(field_name)
@@ -1912,7 +1911,6 @@ fn generate_component_attrs(
           }
         }
         lexer.BoolAttr(name) -> {
-          // Boolean attribute is a prop if it matches an expected prop name
           let field_name = to_field_name(name)
           case list.contains(expected_prop_names, field_name) {
             True -> Ok(field_name)
@@ -1923,29 +1921,41 @@ fn generate_component_attrs(
       }
     })
 
-  // Generate prop field assignments for expression bindings (:prop="expr") that match prop names
-  // AND boolean attributes that match prop names (set to True)
+  // Generate prop field assignments for expression bindings (:prop="expr"),
+  // string attributes (prop="value"), and boolean attributes that match prop names
   let explicit_props_code =
     attributes
     |> list.filter_map(fn(attr) {
       case attr {
         lexer.ExprAttr(name, value) -> {
-          // Only generate prop assignment if name matches an expected prop
           let field_name = to_field_name(name)
           case list.contains(expected_prop_names, field_name) {
             True -> Ok(pad <> field_name <> ": " <> value <> ",\n")
             False -> Error(Nil)
           }
         }
+        lexer.StringAttr(name, value) -> {
+          // String attribute passes value as a Gleam string literal
+          let field_name = to_field_name(name)
+          case list.contains(expected_prop_names, field_name) {
+            True ->
+              Ok(
+                pad
+                <> field_name
+                <> ": \""
+                <> escape_gleam_string(value)
+                <> "\",\n",
+              )
+            False -> Error(Nil)
+          }
+        }
         lexer.BoolAttr(name) -> {
-          // Boolean attribute sets prop to True if it matches an expected prop
           let field_name = to_field_name(name)
           case list.contains(expected_prop_names, field_name) {
             True -> Ok(pad <> field_name <> ": True,\n")
             False -> Error(Nil)
           }
         }
-        lexer.StringAttr(_, _) -> Error(Nil)
         lexer.ClassAttr(_) -> Error(Nil)
         lexer.StyleAttr(_) -> Error(Nil)
         lexer.LmIf(_, _)
@@ -2840,12 +2850,15 @@ fn generate_component_props_json(
       let expr = case
         list.find(attributes, fn(attr) {
           case attr {
-            lexer.ExprAttr(name, _) -> to_field_name(name) == prop_name
+            lexer.ExprAttr(name, _) | lexer.StringAttr(name, _) ->
+              to_field_name(name) == prop_name
             _ -> False
           }
         })
       {
         Ok(lexer.ExprAttr(_, value)) -> value
+        Ok(lexer.StringAttr(_, value)) ->
+          "\"" <> escape_gleam_string(value) <> "\""
         _ -> default_for_type(prop_type)
       }
       let encoder = type_to_encoder(expr, prop_type)

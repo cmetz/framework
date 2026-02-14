@@ -732,6 +732,46 @@ pub fn generate_component_with_expr_attr_test() {
   |> should.be_true
 }
 
+pub fn generate_component_string_attr_as_prop_test() {
+  // title="Welcome" (without : prefix) should pass "Welcome" as a string
+  // prop when the component declares @props(title: String)
+  let tmpl =
+    template([ComponentNode("card", [StringAttr("title", "Welcome")], [])])
+  let component_props =
+    dict.from_list([
+      #("card", generator.ComponentData(props: [#("title", "String")], is_live: False)),
+    ])
+  let result =
+    generator.generate(tmpl, "page", False, component_props, dict.new())
+
+  // Should pass as a Gleam string literal prop
+  result.code
+  |> string.contains("title: \"Welcome\"")
+  |> should.be_true
+}
+
+pub fn generate_component_string_attr_not_prop_stays_as_attribute_test() {
+  // class="card" should remain an HTML attribute when it doesn't match a prop name
+  let tmpl =
+    template([ComponentNode("card", [StringAttr("class", "card")], [])])
+  let component_props =
+    dict.from_list([
+      #("card", generator.ComponentData(props: [#("title", "String")], is_live: False)),
+    ])
+  let result =
+    generator.generate(tmpl, "page", False, component_props, dict.new())
+
+  // "class" is not a prop, so should NOT appear as class: "card"
+  result.code
+  |> string.contains("class: \"card\"")
+  |> should.be_false
+
+  // Should be passed through as an HTML attribute
+  result.code
+  |> string.contains("Attribute(\"class\", \"card\")")
+  |> should.be_true
+}
+
 // ------------------------------------------------------------- String Escaping Tests
 
 pub fn generate_escaped_text_test() {
