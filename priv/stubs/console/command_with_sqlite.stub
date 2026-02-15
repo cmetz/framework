@@ -4,9 +4,6 @@ import glimr_sqlite/db/pool.{type Pool}
 
 // docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#console-commands
 
-/// The name of the console command.
-const name = "app:@{{ command_name }}"
-
 /// The console command description.
 const description = "Command description"
 
@@ -14,13 +11,18 @@ const description = "Command description"
 ///
 pub fn command() -> Command {
   command.new()
-  |> command.name(name)
   |> command.description(description)
   |> command_sqlite.handler(run)
 }
 
 /// Execute the console command.
 ///
-pub fn run(args: Args, pool: Pool) -> Nil {
+fn run(args: Args, pool: Pool) -> Nil {
   todo
+}
+
+/// Console command's entry point
+///
+pub fn main() {
+  command.run(command())
 }
