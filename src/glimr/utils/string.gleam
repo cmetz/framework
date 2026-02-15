@@ -65,3 +65,19 @@ pub fn is_alphanumeric(char: String) -> Bool {
     char,
   )
 }
+
+pub fn is_letter(char: String) -> Bool {
+  string.contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", char)
+}
+
+pub fn is_lowercase_letter(char: String) -> Bool {
+  string.contains("abcdefghijklmnopqrstuvwxyz", char)
+}
+
+pub fn is_uppercase_letter(char: String) -> Bool {
+  string.contains("ABCDEFGHIJKLMNOPQRSTUVWXYZ", char)
+}
+
+pub fn is_whitespace(char: String) -> Bool {
+  char == " " || char == "\n" || char == "\t" || char == "\r"
+}

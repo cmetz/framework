@@ -1,19 +1,15 @@
 import gleam/string
-import glimr/console/command.{type Command, type ParsedArgs, Argument, Flag}
+import glimr/console/command.{type Args, type Command, Argument, Flag}
 import glimr/console/console
 import glimr/filesystem/filesystem
-
-/// The name of the console command.
-const name = "make:rule"
 
 /// The console command description.
 const description = "Create a new validation rule"
 
-/// Define the Command and it's properties.
+/// Define the Command and its properties.
 ///
 pub fn command() -> Command {
   command.new()
-  |> command.name(name)
   |> command.description(description)
   |> command.args([
     Argument(name: "name", description: "The name of the validation rule"),
@@ -28,7 +24,7 @@ pub fn command() -> Command {
 
 /// Execute the console command.
 ///
-fn run(args: ParsedArgs) -> Nil {
+fn run(args: Args) -> Nil {
   let name = command.get_arg(args, "name")
   let file = command.has_flag(args, "file")
 
@@ -60,4 +56,10 @@ fn run(args: ParsedArgs) -> Nil {
       |> console.print()
     }
   }
+}
+
+/// Console command's entry point
+///
+pub fn main() {
+  command.run(command())
 }

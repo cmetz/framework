@@ -8,6 +8,7 @@
 //// - glimr_sqlite/command.handler() for SQLite
 //// - glimr_postgres/command.handler() for PostgreSQL
 
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/erlang/charlist
 import gleam/int
@@ -15,6 +16,8 @@ import gleam/io
 import gleam/list
 import gleam/string
 import glimr/cache/driver.{type CacheStore} as _cache_driver
+import glimr/config/cache
+import glimr/config/database
 import glimr/console/console
 import glimr/db/driver.{type Connection, type DriverType}
 import glimr/glimr
@@ -31,21 +34,21 @@ pub type Command {
     name: String,
     description: String,
     args: List(CommandArg),
-    handler: fn(ParsedArgs) -> Nil,
+    handler: fn(Args) -> Nil,
   )
   CommandWithDb(
     name: String,
     description: String,
     args: List(CommandArg),
     driver_type: DriverType,
-    run_with_pool: fn(ParsedArgs, Connection) -> Nil,
+    run_with_pool: fn(Args, Connection) -> Nil,
   )
   CommandWithCache(
     name: String,
     description: String,
     args: List(CommandArg),
     driver_type: DriverType,
-    run_with_cache: fn(ParsedArgs, Connection, List(CacheStore)) -> Nil,
+    run_with_cache: fn(Args, Connection, List(CacheStore)) -> Nil,
   )
 }
 
@@ -65,8 +68,8 @@ pub type CommandArg {
 /// options with values as a Dict.
 /// Use get_arg(), has_flag(), and get_option() to access values.
 ///
-pub type ParsedArgs {
-  ParsedArgs(
+pub type Args {
+  Args(
     arguments: Dict(String, String),
     flags: List(String),
     options: Dict(String, String),
@@ -117,11 +120,11 @@ pub fn description(cmd: Command, description: String) -> Command {
 }
 
 /// Sets the handler function for the command. The handler
-/// receives ParsedArgs only. For database commands, use
+/// receives Args only. For database commands, use
 /// driver-specific handlers (glimr_sqlite/command.handler or
 /// glimr_postgres/command.handler) instead.
 ///
-pub fn handler(cmd: Command, handler: fn(ParsedArgs) -> Nil) -> Command {
+pub fn handler(cmd: Command, handler: fn(Args) -> Nil) -> Command {
   case cmd {
     Command(..) -> Command(..cmd, handler: handler)
     CommandWithDb(name:, description:, args:, ..) ->
@@ -175,11 +178,11 @@ pub fn db_option() -> CommandArg {
   Option("database", "Database connection to use", "_default")
 }
 
-/// Gets a positional argument value from ParsedArgs by name.
+/// Gets a positional argument value from Args by name.
 /// Arguments are required and validated before the handler runs,
 /// so this will crash if the argument is missing.
 ///
-pub fn get_arg(parsed: ParsedArgs, name: String) -> String {
+pub fn get_arg(parsed: Args, name: String) -> String {
   let assert Ok(value) = dict.get(parsed.arguments, name)
   value
 }
@@ -188,111 +191,67 @@ pub fn get_arg(parsed: ParsedArgs, name: String) -> String {
 /// Returns True if --name or -short was passed on the CLI.
 /// The name parameter should match the Flag's name field.
 ///
-pub fn has_flag(parsed: ParsedArgs, name: String) -> Bool {
+pub fn has_flag(parsed: Args, name: String) -> Bool {
   list.contains(parsed.flags, name)
 }
 
-/// Gets an option value from ParsedArgs by name.
-/// Returns the provided value or the option's default.
+/// Gets an option value from Args by name. Returns empty
+/// string if not found, allowing safe chaining without checking
+/// for errors in command handlers.
 ///
-pub fn get_option(parsed: ParsedArgs, name: String) -> String {
+pub fn get_option(parsed: Args, name: String) -> String {
   case dict.get(parsed.options, name) {
     Ok(value) -> value
     Error(_) -> ""
   }
 }
 
+/// Central dispatch for command execution. Handles the common
+/// concerns (help flags, argument validation) before delegating
+/// to the appropriate handler based on command type.
+///
+pub fn run(cmd: Command) -> Nil {
+  let args = get_args()
+
+  // If the args passed have help flags (--h, -h), then we can just
+  // print the help information for the command, and return
+  use <- bool.lazy_guard(has_help_flag(args), fn() { print_command_help(cmd) })
+
+  // Validate required args are present
+  case parse_and_validate(cmd.name, cmd.args, args) {
+    Ok(parsed) -> {
+      case cmd {
+        // Handle a command with no database/cache access
+        Command(handler:, ..) -> handler(parsed)
+
+        // Handle a command with database access
+        CommandWithDb(run_with_pool:, driver_type:, ..) -> {
+          run_with_connection(parsed, driver_type, run_with_pool)
+        }
+
+        // Handle a command with cache access
+        CommandWithCache(run_with_cache:, driver_type:, ..) -> {
+          let cache_stores = cache.load()
+          use p, conn <- run_with_connection(parsed, driver_type)
+
+          run_with_cache(p, conn, cache_stores)
+        }
+      }
+    }
+    Error(_) -> Nil
+  }
+}
+
 // ------------------------------------------------------------- Internal Public Functions
 
-/// Retrieves command-line arguments as Gleam strings. Calls
-/// the Erlang function to get raw charlists and converts them
-/// to Gleam strings for easier processing.
+/// Bridges Erlang's charlist-based CLI args to Gleam strings.
+/// Without this, every caller would need to handle the charlist
+/// conversion themselves.
 ///
 @internal
 pub fn get_args() -> List(String) {
   erlang_get_args()
   |> list.map(charlist.to_string)
-}
-
-/// Finds a command by name and executes it with the given
-/// arguments. Returns False if the command is not found.
-///
-@internal
-pub fn find_and_run(
-  commands: List(Command),
-  connections: List(Connection),
-  cache_stores: List(CacheStore),
-  name: String,
-  args: List(String),
-) -> Bool {
-  case find(commands, name) {
-    Ok(cmd) -> {
-      run(cmd, args, connections, cache_stores)
-      io.println("")
-      True
-    }
-    Error(_) -> False
-  }
-}
-
-/// Displays the help message with all available commands.
-/// Command descriptions are aligned for readability based
-/// on the longest command name in the list.
-///
-@internal
-pub fn print_help(commands: List(Command)) {
-  print_glimr_version()
-  io.println("")
-
-  io.println(console.warning("Usage:"))
-  io.println("  command [arguments] [options]")
-  io.println("")
-
-  // Find the longest command name for alignment
-  let max_length =
-    list.fold(commands, string.length("-h, --help"), fn(acc, cmd) {
-      int.max(acc, string.length(cmd.name))
-    })
-
-  io.println(console.warning("Options:"))
-  let help_label = string.pad_end("-h, --help", max_length + 2, " ")
-  io.println(
-    "  " <> console.success(help_label) <> "Display help for the given command",
-  )
-  io.println("")
-
-  // Split commands into non-namespaced and namespaced
-  let #(non_namespaced, namespaced) =
-    list.partition(commands, fn(cmd) { !string.contains(cmd.name, ":") })
-
-  // Sort non-namespaced commands alphabetically
-  let sorted_non_namespaced =
-    list.sort(non_namespaced, fn(a, b) { string.compare(a.name, b.name) })
-
-  // Group namespaced commands by namespace
-  let grouped = group_by_namespace(namespaced)
-
-  // Sort namespace groups alphabetically
-  let sorted_groups = list.sort(grouped, fn(a, b) { string.compare(a.0, b.0) })
-
-  // Print non-namespaced commands
-  io.println(console.warning("Available commands:"))
-  list.each(sorted_non_namespaced, fn(cmd) {
-    let padded_name = string.pad_end(cmd.name, max_length + 2, " ")
-    io.println("  " <> console.success(padded_name) <> cmd.description)
-  })
-
-  // Print namespaced commands grouped by namespace
-  list.each(sorted_groups, fn(group) {
-    let #(namespace, cmds) = group
-    io.println(" " <> console.warning(namespace))
-    list.each(cmds, fn(cmd) {
-      let padded_name = string.pad_end(cmd.name, max_length + 2, " ")
-      io.println("  " <> console.success(padded_name) <> cmd.description)
-    })
-  })
-
-  io.println("")
 }
 
 /// Prints the current Glimr framework version to the console.
@@ -301,162 +260,40 @@ pub fn print_help(commands: List(Command)) {
 ///
 @internal
 pub fn print_glimr_version() -> Nil {
-  io.println("Glimr Framework " <> console.success(glimr.get_version()))
-}
-
-/// Stores commands in persistent term storage for later
-/// retrieval. Used by the kernel to cache registered commands
-/// so they can be accessed across process boundaries.
-///
-@internal
-pub fn store_commands(commands: List(Command)) -> Nil {
-  erlang_store_commands(commands)
-}
-
-/// Retrieves previously stored commands from persistent term
-/// storage. Returns the list of commands that were stored via
-/// store_commands for use in command lookup and execution.
-///
-@internal
-pub fn get_commands() -> List(Command) {
-  erlang_get_commands()
+  io.println("Glimr " <> console.success(glimr.get_version()))
 }
 
 // ------------------------------------------------------------- Private Functions
 
-/// Filters the list of commands given and finds the desired
-/// command by the name that is provided. Returns Ok(Command)
-/// if found, or Error(Nil) if no command matches.
+/// Shared logic for CommandWithDb and CommandWithCache. Avoids
+/// duplicating the connection lookup and option updating code
+/// across both command types.
 ///
-fn find(commands: List(Command), name: String) -> Result(Command, Nil) {
-  list.find(commands, fn(cmd) { cmd.name == name })
-}
-
-/// Executes a command by calling its handler function.
-/// Checks for help flag first, then parses and validates
-/// arguments before calling the appropriate handler.
-///
-fn run(
-  cmd: Command,
-  raw_args: List(String),
-  connections: List(Connection),
-  cache_stores: List(CacheStore),
+fn run_with_connection(
+  parsed: Args,
+  driver_type: DriverType,
+  handler: fn(Args, Connection) -> Nil,
 ) -> Nil {
-  case has_help_flag(raw_args) {
-    True -> print_command_help(cmd)
-    False -> {
-      case cmd {
-        Command(handler:, ..) -> {
-          case parse_and_validate(cmd.name, cmd.args, raw_args) {
-            Ok(parsed) -> {
-              // Resolve and validate connection if db option is used
-              case resolve_db_connection(parsed, connections) {
-                Ok(resolved) -> handler(resolved)
-                Error(_) -> Nil
-              }
-            }
-            Error(_) -> Nil
-          }
-        }
-        CommandWithDb(run_with_pool:, driver_type:, ..) -> {
-          case parse_and_validate(cmd.name, cmd.args, raw_args) {
-            Ok(parsed) -> {
-              let db_name = get_option(parsed, "database")
-              case find_connection(connections, db_name, driver_type) {
-                Ok(conn) -> {
-                  // Replace _default with actual connection name
-                  let actual_name = driver.connection_name(conn)
-                  let updated_options =
-                    dict.insert(parsed.options, "database", actual_name)
-                  let updated_parsed =
-                    ParsedArgs(..parsed, options: updated_options)
-                  run_with_pool(updated_parsed, conn)
-                }
-                Error(_) -> {
-                  console.output()
-                  |> console.line_error("Connection not found: " <> db_name)
-                  |> console.print()
-                }
-              }
-            }
-            Error(_) -> Nil
-          }
-        }
-        CommandWithCache(run_with_cache:, driver_type:, ..) -> {
-          case parse_and_validate(cmd.name, cmd.args, raw_args) {
-            Ok(parsed) -> {
-              let db_name = get_option(parsed, "database")
-              case find_connection(connections, db_name, driver_type) {
-                Ok(conn) -> {
-                  // Replace _default with actual connection name
-                  let actual_name = driver.connection_name(conn)
-                  let updated_options =
-                    dict.insert(parsed.options, "database", actual_name)
-                  let updated_parsed =
-                    ParsedArgs(..parsed, options: updated_options)
-                  run_with_cache(updated_parsed, conn, cache_stores)
-                }
-                Error(_) -> {
-                  console.output()
-                  |> console.line_error("Connection not found: " <> db_name)
-                  |> console.print()
-                }
-              }
-            }
-            Error(_) -> Nil
-          }
-        }
-      }
+  let connections = database.load()
+  let db_name = get_option(parsed, "database")
+
+  case find_connection(connections, db_name, driver_type) {
+    Ok(conn) -> {
+      let actual_name = driver.connection_name(conn)
+      let updated_options = dict.insert(parsed.options, "database", actual_name)
+      handler(Args(..parsed, options: updated_options), conn)
+    }
+    Error(_) -> {
+      console.output()
+      |> console.line_error("Connection not found: " <> db_name)
+      |> console.print()
     }
   }
 }
 
-/// Resolves and validates the database option. If "_default",
-/// uses the first connection. Otherwise validates the named
-/// connection exists. Returns Error and prints message if
-/// validation fails. Passes through unchanged if no db option.
-///
-fn resolve_db_connection(
-  parsed: ParsedArgs,
-  connections: List(Connection),
-) -> Result(ParsedArgs, Nil) {
-  case dict.get(parsed.options, "database") {
-    Ok("_default") -> {
-      case list.first(connections) {
-        Ok(conn) -> {
-          let actual_name = driver.connection_name(conn)
-          let updated_options =
-            dict.insert(parsed.options, "database", actual_name)
-          Ok(ParsedArgs(..parsed, options: updated_options))
-        }
-        Error(_) -> {
-          console.output()
-          |> console.line_error("No database connections configured.")
-          |> console.print()
-          Error(Nil)
-        }
-      }
-    }
-    Ok(db_name) -> {
-      case
-        list.find(connections, fn(c) { driver.connection_name(c) == db_name })
-      {
-        Ok(_) -> Ok(parsed)
-        Error(_) -> {
-          console.output()
-          |> console.line_error("Connection not found: " <> db_name)
-          |> console.print()
-          Error(Nil)
-        }
-      }
-    }
-    Error(_) -> Ok(parsed)
-  }
-}
-
-/// Finds a connection by name from the list of configured
-/// connections, filtered by driver type. If name is "_default",
-/// uses the first connection of that driver type.
+/// Locates a connection matching both name and driver type.
+/// Filtering by driver type prevents accidentally using a
+/// SQLite connection with a Postgres command or vice versa.
 ///
 fn find_connection(
   connections: List(Connection),
@@ -472,38 +309,17 @@ fn find_connection(
   }
 }
 
-/// Checks if the raw arguments contain -h or --help flag.
-/// Used to determine if the user is requesting help for a
-/// specific command instead of running it.
+/// Detects help requests early so we can show command help
+/// instead of running the command. Checked before argument
+/// validation to avoid "missing argument" errors on help.
 ///
 fn has_help_flag(raw_args: List(String)) -> Bool {
   list.any(raw_args, fn(arg) { arg == "-h" || arg == "--help" })
 }
 
-/// Groups commands by their namespace (the part before the colon).
-/// Commands within each group are sorted alphabetically by name.
-/// Returns a list of tuples containing namespace and its commands.
-///
-fn group_by_namespace(commands: List(Command)) -> List(#(String, List(Command))) {
-  // Sort all commands first
-  let sorted = list.sort(commands, fn(a, b) { string.compare(a.name, b.name) })
-
-  // Group by namespace
-  list.fold(sorted, [], fn(acc, cmd) {
-    let namespace = case string.split(cmd.name, ":") {
-      [ns, ..] -> ns
-      _ -> ""
-    }
-    case list.key_find(acc, namespace) {
-      Ok(existing) -> list.key_set(acc, namespace, list.append(existing, [cmd]))
-      Error(_) -> list.append(acc, [#(namespace, [cmd])])
-    }
-  })
-}
-
-/// Prints detailed help for a specific command showing
-/// its description, usage, arguments, flags, and options. Called
-/// when a command is invoked with -h or --help flag.
+/// Renders detailed help for a single command. Unlike the
+/// main help screen, this shows all arguments, flags, and
+/// options with their descriptions and defaults.
 ///
 fn print_command_help(cmd: Command) -> Nil {
   // Description
@@ -583,6 +399,22 @@ fn print_command_help(cmd: Command) -> Nil {
 
   let max_len = int.max(max_flag_len, max_opt_len)
 
+  // Options section (only if there are options with values)
+  case options {
+    [] -> Nil
+    _ -> {
+      io.println(console.warning("Options:"))
+      list.each(options, fn(opt) {
+        let #(opt_name, opt_desc, opt_default) = opt
+        let label = "    --" <> opt_name <> "=<value>"
+        let padded = string.pad_end(label, max_len + 2, " ")
+        let desc_with_default = opt_desc <> " [default: " <> opt_default <> "]"
+        io.println("  " <> console.success(padded) <> desc_with_default)
+      })
+      io.println("")
+    }
+  }
+
   // Flags section (includes -h, --help)
   io.println(console.warning("Flags:"))
   list.each(flags, fn(flag) {
@@ -600,28 +432,11 @@ fn print_command_help(cmd: Command) -> Nil {
   io.println(
     "  " <> console.success(help_label) <> "Display help for this command",
   )
-  io.println("")
-
-  // Options section (only if there are options with values)
-  case options {
-    [] -> Nil
-    _ -> {
-      io.println(console.warning("Options:"))
-      list.each(options, fn(opt) {
-        let #(opt_name, opt_desc, opt_default) = opt
-        let label = "    --" <> opt_name <> "=<value>"
-        let padded = string.pad_end(label, max_len + 2, " ")
-        let desc_with_default = opt_desc <> " [default: " <> opt_default <> "]"
-        io.println("  " <> console.success(padded) <> desc_with_default)
-      })
-      io.println("")
-    }
-  }
 }
 
-/// Builds the usage line showing command name, flags/options placeholder,
-/// and argument placeholders in the correct format. Arguments are
-/// shown as <name> and flags/options as [options] when present.
+/// Constructs the "Usage:" line for help output. Shows [options]
+/// only when flags/options exist, keeping the output clean for
+/// simple commands that only take positional arguments.
 ///
 fn build_usage_line(name: String, args: List(CommandArg)) -> String {
   let has_flags_or_options =
@@ -651,16 +466,15 @@ fn build_usage_line(name: String, args: List(CommandArg)) -> String {
   }
 }
 
-/// Parses raw CLI arguments against command argument
-/// definitions. Validates that all required Arguments are
-/// provided. Returns ParsedArgs on success, prints error and
-/// returns Error on failure.
+/// Transforms raw CLI strings into structured Args.
+/// Validates required arguments early so handlers don't need
+/// to check for missing values themselves.
 ///
 fn parse_and_validate(
   cmd_name: String,
   arg_defs: List(CommandArg),
   raw_args: List(String),
-) -> Result(ParsedArgs, Nil) {
+) -> Result(Args, Nil) {
   let argument_defs =
     list.filter_map(arg_defs, fn(def) {
       case def {
@@ -732,7 +546,7 @@ fn parse_and_validate(
 
   case missing {
     [] ->
-      Ok(ParsedArgs(
+      Ok(Args(
         arguments: arguments,
         flags: parsed_flags,
         options: options_with_defaults,
@@ -749,9 +563,9 @@ fn parse_and_validate(
   }
 }
 
-/// Parses raw CLI args into positional values, flags, and options.
-/// Flags are boolean (--flag or -f), options have values (--opt=val).
-/// Returns a tuple of #(positional_values, flag_names, option_dict).
+/// Low-level argument parser that separates positional args from
+/// flags and options. Handles both long (--flag) and short (-f)
+/// forms, ignoring unknown flags to allow forward compatibility.
 ///
 fn parse_raw_args(
   raw_args: List(String),
@@ -853,7 +667,7 @@ fn print_usage(cmd_name: String, arg_defs: List(CommandArg)) -> Nil {
 /// Prints an error message indicating the command is not
 /// properly configured. Used as placeholder during setup.
 ///
-fn temp_handler(_args: ParsedArgs) -> Nil {
+fn temp_handler(_args: Args) -> Nil {
   io.println(console.error(
     "A handler function has not been set for this command.",
   ))
@@ -867,17 +681,3 @@ fn temp_handler(_args: ParsedArgs) -> Nil {
 ///
 @external(erlang, "init", "get_plain_arguments")
 fn erlang_get_args() -> List(charlist.Charlist)
-
-/// FFI call to store commands in Erlang persistent_term.
-/// Enables fast read access to commands across all processes
-/// without copying data.
-///
-@external(erlang, "glimr_kernel_ffi", "store_commands")
-fn erlang_store_commands(commands: List(Command)) -> Nil
-
-/// FFI call to retrieve commands from Erlang persistent_term.
-/// Returns the commands stored by erlang_store_commands for
-/// use in command dispatch and help display.
-///
-@external(erlang, "glimr_kernel_ffi", "get_stored_commands")
-fn erlang_get_commands() -> List(Command)

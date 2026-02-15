@@ -9,10 +9,9 @@ import gleam/http.{type Method}
 import gleam/http/response
 import gleam/list
 import gleam/string
+import glimr/config/route_group
 import glimr/http/kernel.{type MiddlewareGroup}
 import wisp.{type Request, type Response}
-
-// ------------------------------------------------------------- Public Types
 
 /// Groups routes together with a shared middleware group and
 /// handler function. Routes use pattern matching for type-safe
@@ -30,8 +29,8 @@ pub type RouteGroup(context) {
 // ------------------------------------------------------------- Public Functions
 
 /// Main entry point for routing HTTP requests. Matches the
-/// request path against registered route groups, strips the
-/// prefix, applies middleware, and calls the route handler.
+/// request path against registered route groups, applies
+/// middleware, and calls the route handler with the full path.
 ///
 /// Route groups are checked in order. The first matching
 /// prefix wins. Empty prefix ("") acts as a catch-all and
@@ -40,9 +39,8 @@ pub type RouteGroup(context) {
 /// Flow for GET /api/users/123:
 /// 1. Parse path into ["api", "users", "123"]
 /// 2. Find group with prefix "/api"
-/// 3. Strip prefix → ["users", "123"]
-/// 4. Apply API middleware group
-/// 5. Call routes(["users", "123"], Get, req, ctx)
+/// 3. Apply API middleware group
+/// 4. Call routes(["api", "users", "123"], Get, req, ctx)
 ///
 pub fn handle(
   req: Request,
@@ -79,24 +77,9 @@ pub fn handle(
 
   case matching_group {
     Ok(group) -> {
-      // Strip prefix from path before passing to handler
-      // Example: "/api" prefix + ["api", "users"] → ["users"]
-      let handler_path = case group.prefix {
-        "" -> path_segments
-
-        prefix -> {
-          let prefix_segments =
-            string.split(prefix, "/")
-            |> list.filter(fn(segment) { segment != "" })
-
-          // Drop prefix segments from path
-          list.drop(path_segments, list.length(prefix_segments))
-        }
-      }
-
-      // Apply group middleware then call route handler
+      // Apply group middleware then call route handler with full path
       use req <- kernel_handle(req, ctx, group.middleware_group)
-      group.routes(handler_path, method, req, ctx)
+      group.routes(path_segments, method, req, ctx)
     }
 
     // No matching group (should never happen with catch-all)
@@ -105,6 +88,25 @@ pub fn handle(
       response.Response(404, [], wisp.Text(""))
     }
   }
+}
+
+/// Registers route groups by loading config from
+/// config/route_group.toml and attaching route handlers.
+/// Takes a loader function that returns the routes function
+/// for each named group.
+///
+pub fn register(
+  routes_for: fn(String) ->
+    fn(List(String), Method, Request, context) -> Response,
+) -> List(RouteGroup(context)) {
+  route_group.load()
+  |> list.map(fn(group_config) {
+    RouteGroup(
+      prefix: group_config.prefix,
+      middleware_group: group_config.middleware,
+      routes: routes_for(group_config.name),
+    )
+  })
 }
 
 // ------------------------------------------------------------- Private Functions

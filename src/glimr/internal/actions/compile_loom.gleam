@@ -1,221 +1,215 @@
 //// Loom Template Compiler
 ////
-//// Compiles Loom template files (.loom.html) to executable Gleam
-//// code. Handles dependency tracking between components and
-//// their consumers for incremental compilation.
+//// Compiles Loom template files (.loom.html) to executable
+//// Gleam code. Handles dependency tracking between components
+//// and their consumers for incremental compilation.
 ////
 
+import gleam/bool
 import gleam/dict
 import gleam/int
 import gleam/io
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option
 import gleam/result
 import gleam/string
 import glimr/console/console
 import glimr/filesystem/filesystem
-import glimr/loom/generator
-import glimr/loom/gleam_parser
+import glimr/loom/generator.{type ComponentDataMap, type ComponentSlotMap}
 import glimr/loom/lexer
+import glimr/loom/loom
 import glimr/loom/parser
+import glimr/loom/registry
 import shellout
 import simplifile
 
-const views_path = "src/resources/views/"
+// ------------------------------------------------------------- Public Functions
 
-const app_loom_path = "src/app/loom/"
-
-const output_path = "src/bootstrap/gen/loom/"
-
-/// Tracks a compiled file with its source path, output path,
-/// and previous content. Used for reverting generated files
-/// if validation fails after compilation.
-///
-pub type CompiledFile {
-  CompiledFile(source: String, output: String, previous: String)
-}
-
-/// Compiles all loom template files. Discovers templates in
-/// the views directory, compiles components first, then pages,
-/// and validates the generated code.
+/// Entry point for full compilation. Components must be
+/// compiled before pages so that component data/slot maps are 
+/// available during page generation.
 ///
 pub fn run(verbose: Bool) -> Result(Nil, String) {
-  let all_files = find_loom_files(views_path)
+  let loom_files = loom.find_files()
 
-  case all_files {
-    [] -> {
-      io.println(console.warning(""))
-      io.println(console.warning("No loom templates found"))
-      Ok(Nil)
+  // Early return if there aren't any loom files.
+  use <- bool.lazy_guard(list.is_empty(loom_files), fn() {
+    io.println(console.warning(""))
+    io.println(console.warning("No loom templates found"))
+
+    Ok(Nil)
+  })
+
+  case verbose {
+    True -> {
+      console.output()
+      |> console.line_warning("Compiling loom views...")
+      |> console.print()
     }
-    _ -> {
-      case verbose {
-        True ->
-          console.output()
-          |> console.line_warning("Compiling loom views...")
-          |> console.print()
-        False -> Nil
-      }
+    False -> Nil
+  }
 
-      // Build component data map first
-      let component_data = build_component_data_map()
+  // Stale entries would cause false positives during
+  // module validation, so we rebuild from scratch.
+  let _ = registry.clear()
 
-      // Compile component files (they may depend on other components)
-      let component_files =
-        list.filter(all_files, fn(f) { string.contains(f, "components/") })
-      let page_files =
-        list.filter(all_files, fn(f) { !string.contains(f, "components/") })
+  // Split files into components and pages
+  let component_files = loom.find_components(loom_files)
+  let page_files = loom.find_non_components(loom_files)
 
-      // Build component slot map (component name -> slot info)
-      let component_slots = build_component_slot_map(component_files)
+  // Build component data and slot maps in a single pass
+  let #(data, slots) = build_component_maps(component_files)
 
-      let component_compiled =
-        list.filter_map(component_files, fn(file) {
-          compile_file(file, component_data, component_slots, verbose)
-        })
+  // Compile components
+  use _ <- result.try(compile_files(component_files, data, slots, verbose))
 
-      // Compile page files last (they may depend on components)
-      let page_compiled =
-        list.filter_map(page_files, fn(file) {
-          compile_file(file, component_data, component_slots, verbose)
-        })
+  // Compile pages
+  use _ <- result.try(compile_files(page_files, data, slots, verbose))
 
-      let all_compiled = list.flatten([component_compiled, page_compiled])
+  // Run `gleam format` on the generated files
+  format_generated_files()
 
-      format_generated_files()
-
-      // Run gleam check once after all files are written
-      validate_generated_files(all_compiled)
-
-      case verbose {
-        True -> Nil
-        False -> io.println(console.success("Compiled loom templates..."))
-      }
-
-      Ok(Nil)
+  case verbose {
+    True -> Nil
+    False -> {
+      console.output()
+      |> console.line_success(
+        "Compiled "
+        <> int.to_string(list.length(loom_files))
+        <> " Loom templates",
+      )
+      |> console.print()
     }
   }
+
+  Ok(Nil)
 }
 
-/// Compiles a single loom file by path. Handles both template
-/// files (.loom.html) and view files (.gleam), routing to the
-/// appropriate compilation strategy.
+// ------------------------------------------------------------- Private Functions
+
+/// Iterates over files and stops on the first error so that the 
+/// user sees the most relevant failure instead of a cascade 
+/// of downstream errors.
+///
+fn compile_files(
+  files: List(String),
+  component_data: ComponentDataMap,
+  component_slots: ComponentSlotMap,
+  verbose: Bool,
+) -> Result(Nil, String) {
+  list.try_each(files, compile_file(_, component_data, component_slots, verbose))
+}
+
+/// Single-file entry point used by the file watcher. Validates
+/// the path ends in .loom.html before attempting compilation
+/// to prevent non-template files from entering the pipeline.
 ///
 pub fn run_path(path: String, verbose: Bool) -> Result(Nil, String) {
   case string.ends_with(path, ".loom.html") {
-    True -> {
-      compile_loom_path(path, verbose)
-      Ok(Nil)
-    }
-    False ->
-      case string.ends_with(path, ".gleam") {
-        True -> {
-          compile_view_file_path(path, verbose)
-          Ok(Nil)
-        }
-        False ->
-          Error(
-            "Not a loom file or view file: path must end with '.loom.html' or '.gleam'",
-          )
-      }
+    True -> compile_loom_path(path, verbose)
+    False -> Error("Not a loom file: path must end with '.loom.html'")
   }
 }
 
-/// Compiles a loom template path. Checks if the file exists
-/// and either compiles it or cleans up the generated file
-/// if the source was deleted.
+/// Handles both existing and deleted templates so the file 
+/// watcher can pass any path change without needing to 
+/// distinguish deletions from modifications.
 ///
-fn compile_loom_path(path: String, verbose: Bool) -> Nil {
+fn compile_loom_path(path: String, verbose: Bool) -> Result(Nil, String) {
   // Check if file was deleted - if so, clean up generated file
   case simplifile.is_file(path) {
     Ok(True) -> compile_existing_loom_path(path, verbose)
-    _ -> cleanup_deleted_loom_file(path, verbose)
+    _ -> {
+      cleanup_deleted_loom_file(path, verbose)
+      Ok(Nil)
+    }
   }
 }
 
-/// Compiles an existing loom template. Routes layout changes
-/// to full recompilation, component changes to dependency
-/// recompilation, and regular templates to single compilation.
+/// Routes to the correct compilation strategy because layouts 
+/// affect all templates, components cascade to dependents, and 
+/// regular templates stand alone.
 ///
-fn compile_existing_loom_path(path: String, verbose: Bool) -> Nil {
-  case string.contains(path, "layouts/") {
-    // Layout changes affect all templates
-    True -> {
-      let _ = run(verbose)
-      Nil
-    }
-    False -> {
-      case string.contains(path, "components/") {
-        // Component template changed - recompile it + all templates using it
-        True -> compile_component_template_and_dependents(path, verbose)
-        // Regular template - just compile it
-        False -> {
-          case verbose {
-            True ->
-              console.output()
-              |> console.line_warning("Compiling loom views...")
-              |> console.print()
-            False -> Nil
-          }
+fn compile_existing_loom_path(
+  path: String,
+  verbose: Bool,
+) -> Result(Nil, String) {
+  // Layout changes affect all templates
+  use <- bool.lazy_guard(string.contains(path, "layouts/"), fn() {
+    run(verbose)
+  })
 
-          let component_data = build_component_data_map()
-          let component_slots = build_component_slot_map_all()
-          case compile_file(path, component_data, component_slots, verbose) {
-            Ok(compiled) -> {
-              format_generated_files()
-              validate_generated_files([compiled])
-              case verbose {
-                True -> Nil
-                False -> io.println(console.success("Compiled 1 loom template"))
-              }
-            }
-            Error(_) -> Nil
-          }
-        }
-      }
-    }
+  // Component changes recompile dependents
+  use <- bool.lazy_guard(string.contains(path, "components/"), fn() {
+    compile_component_and_dependents(path, verbose)
+  })
+
+  case verbose {
+    True ->
+      console.output()
+      |> console.line_warning("Compiling loom views...")
+      |> console.print()
+    False -> Nil
   }
+
+  let #(component_data, component_slots) =
+    build_component_maps(loom.find_components(loom.find_files()))
+
+  use _ <- result.try(compile_file(
+    path,
+    component_data,
+    component_slots,
+    verbose,
+  ))
+
+  format_generated_files()
+
+  case verbose {
+    True -> Nil
+    False -> io.println(console.success("Compiled 1 Loom template"))
+  }
+
+  Ok(Nil)
 }
 
-/// Cleans up the generated file when a source template is
-/// deleted. Removes the corresponding .gleam file from the
-/// bootstrap/gen/loom directory.
+/// Prevents stale generated files from lingering after a source 
+/// template is deleted, which would cause compile errors or 
+/// serve outdated content.
 ///
 fn cleanup_deleted_loom_file(path: String, verbose: Bool) -> Nil {
   let output_file = path_to_output_path(path)
+  let module_name = path_to_module_name(path)
 
-  case simplifile.is_file(output_file) {
-    Ok(True) -> {
-      case simplifile.delete(output_file) {
-        Ok(_) -> {
-          case verbose {
-            True ->
-              console.output()
-              |> console.line_success(
-                "Cleaned up generated file for deleted template:",
-              )
-              |> console.line("  " <> output_file)
-              |> console.print()
-            False -> io.println(console.success("Cleaned up 1 generated file"))
-          }
-        }
-        Error(_) -> {
-          io.println(console.error("Failed to delete: " <> output_file))
-        }
-      }
+  // Unregister the module from the live registry
+  let _ = registry.unregister_module(module_name)
+
+  let file_exists = simplifile.is_file(output_file) |> result.unwrap(False)
+  use <- bool.lazy_guard(!file_exists, fn() { Nil })
+
+  case simplifile.delete(output_file), verbose {
+    Ok(_), True -> {
+      console.output()
+      |> console.line_success("Cleaned up generated file for deleted template:")
+      |> console.line("  " <> output_file)
+      |> console.print()
     }
-    _ -> Nil
+    Ok(_), False -> io.println(console.success("Cleaned up 1 generated file"))
+    Error(_), _ -> {
+      console.output()
+      |> console.line_error("Failed to delete: " <> output_file)
+      |> console.print()
+    }
   }
 }
 
-/// Compiles a component template and all dependents. Finds
-/// all templates that use the component and recompiles them
-/// to ensure consistent generated code.
+/// Component changes cascade to consumers because the generated 
+/// code for each consumer depends on the component's props and 
+/// slot definitions.
 ///
-fn compile_component_template_and_dependents(
+fn compile_component_and_dependents(
   component_template_path: String,
   verbose: Bool,
-) -> Nil {
+) -> Result(Nil, String) {
   // Extract component name from template path
   // e.g., src/resources/views/components/forms/input.loom.html -> "forms.input"
   let component_name =
@@ -223,18 +217,15 @@ fn compile_component_template_and_dependents(
   let component_tag = "<x-" <> component_name
 
   // Find all templates that use this component
-  let all_templates = find_loom_files(views_path)
+  let all_templates = loom.find_files()
   let dependent_templates =
     all_templates
     |> list.filter(fn(template_path) {
-      // Don't include the component itself
-      case template_path == component_template_path {
-        True -> False
-        False -> {
-          case simplifile.read(template_path) {
-            Ok(content) -> string.contains(content, component_tag)
-            Error(_) -> False
-          }
+      template_path != component_template_path
+      && {
+        case simplifile.read(template_path) {
+          Ok(content) -> string.contains(content, component_tag)
+          Error(_) -> False
         }
       }
     })
@@ -256,499 +247,212 @@ fn compile_component_template_and_dependents(
     False -> Nil
   }
 
-  let component_data = build_component_data_map()
-  let component_slots = build_component_slot_map_all()
-  let compiled =
-    list.filter_map(templates_to_compile, fn(template_path) {
-      compile_file(template_path, component_data, component_slots, verbose)
-    })
+  let #(component_data, component_slots) =
+    build_component_maps(loom.find_components(loom.find_files()))
+
+  use _ <- result.try(compile_files(
+    templates_to_compile,
+    component_data,
+    component_slots,
+    verbose,
+  ))
 
   format_generated_files()
-  validate_generated_files(compiled)
 
   case verbose {
     True -> Nil
     False ->
       io.println(
         console.success("Compiled ")
-        <> int.to_string(list.length(compiled))
-        <> " loom template(s)",
+        <> int.to_string(list.length(templates_to_compile))
+        <> " Loom template(s)",
       )
   }
+
+  Ok(Nil)
 }
 
-/// Extracts component name from a template path. Converts
-/// path like src/resources/views/components/forms/input.loom.html
-/// to component name "forms:input".
+/// Derives the component name used in template tags from the 
+/// file path. Subdirectories become colon-separated prefixes 
+/// (e.g., forms/input.loom.html -> "forms:input").
 ///
 fn component_name_from_template_path(path: String) -> String {
   path
-  |> string.replace(views_path <> "components/", "")
+  |> string.replace(loom.views_path <> "components/", "")
   |> string.replace(".loom.html", "")
   |> string.replace("/", ":")
 }
 
-/// Handles compilation triggered by app/loom file changes.
-/// Routes layout changes to full recompilation, component
-/// changes to dependency recompilation.
-///
-fn compile_view_file_path(path: String, verbose: Bool) -> Nil {
-  // Check if this is an app/loom file
-  case string.contains(path, app_loom_path) {
-    False -> {
-      io.println(console.error("Not an app/loom file: " <> path))
-    }
-    True -> {
-      case string.contains(path, "layouts/") {
-        // Layout changes affect all templates
-        True -> {
-          let _ = run(verbose)
-          Nil
-        }
-        False -> {
-          case string.contains(path, app_loom_path <> "components/") {
-            // Component Data changed - recompile component + all templates using it
-            True -> compile_component_and_dependents(path, verbose)
-            // Regular view file - just recompile its template
-            False -> compile_single_view_file(path, verbose)
-          }
-        }
-      }
-    }
-  }
-}
-
-/// Compiles a component and all templates that depend on it.
-/// Triggered when a component's Data type changes, requiring
-/// all consumers to be recompiled.
-///
-fn compile_component_and_dependents(
-  component_view_path: String,
-  verbose: Bool,
-) -> Nil {
-  // Extract component name (e.g., "button" or "forms.input")
-  let component_name = component_name_from_view_path(component_view_path)
-  let component_tag = "<x-" <> component_name
-
-  // Get the component's own template path
-  let component_template = view_file_to_template_path(component_view_path)
-
-  // Find all templates that use this component
-  let all_templates = find_loom_files(views_path)
-  let dependent_templates =
-    all_templates
-    |> list.filter(fn(template_path) {
-      // Don't include the component itself - we'll add it separately
-      case template_path == component_template {
-        True -> False
-        False -> {
-          case simplifile.read(template_path) {
-            Ok(content) -> string.contains(content, component_tag)
-            Error(_) -> False
-          }
-        }
-      }
-    })
-
-  // Build list of templates to compile: component first, then dependents
-  let templates_to_compile = case simplifile.is_file(component_template) {
-    Ok(True) -> [component_template, ..dependent_templates]
-    _ -> dependent_templates
-  }
-
-  case templates_to_compile {
-    [] -> {
-      io.println(console.warning(
-        "No templates found for component: " <> component_name,
-      ))
-    }
-    _ -> {
-      case verbose {
-        True ->
-          console.output()
-          |> console.line_warning(
-            "Compiling "
-            <> component_name
-            <> " and "
-            <> int.to_string(list.length(dependent_templates))
-            <> " dependent template(s)...",
-          )
-          |> console.print()
-        False -> Nil
-      }
-
-      let component_data = build_component_data_map()
-      let component_slots = build_component_slot_map_all()
-      let compiled =
-        list.filter_map(templates_to_compile, fn(template_path) {
-          compile_file(template_path, component_data, component_slots, verbose)
-        })
-
-      format_generated_files()
-      validate_generated_files(compiled)
-
-      case verbose {
-        True -> Nil
-        False ->
-          io.println(
-            console.success("Compiled ")
-            <> int.to_string(list.length(compiled))
-            <> " loom template(s)",
-          )
-      }
-    }
-  }
-}
-
-/// Compiles a single view file's corresponding template.
-/// Finds the matching .loom.html file and compiles it with
-/// the updated view data.
-///
-fn compile_single_view_file(path: String, verbose: Bool) -> Nil {
-  let loom_path = view_file_to_template_path(path)
-
-  case simplifile.is_file(loom_path) {
-    Ok(True) -> {
-      case verbose {
-        True ->
-          console.output()
-          |> console.line_warning(
-            "Compiling loom views (triggered by " <> path <> ")...",
-          )
-          |> console.print()
-        False -> Nil
-      }
-
-      let component_data = build_component_data_map()
-      let component_slots = build_component_slot_map_all()
-      case compile_file(loom_path, component_data, component_slots, verbose) {
-        Ok(compiled) -> {
-          format_generated_files()
-          validate_generated_files([compiled])
-          case verbose {
-            True -> Nil
-            False -> io.println(console.success("Compiled 1 loom template"))
-          }
-        }
-        Error(_) -> Nil
-      }
-    }
-    _ -> {
-      io.println(console.warning(
-        "No corresponding template found for "
-        <> path
-        <> " (expected: "
-        <> loom_path
-        <> ")",
-      ))
-    }
-  }
-}
-
-/// Extracts component name from a view file path. Converts
-/// path like src/app/loom/components/forms/input.gleam to
-/// component name "forms:input".
-///
-fn component_name_from_view_path(path: String) -> String {
-  path
-  |> string.replace(app_loom_path <> "components/", "")
-  |> string.replace(".gleam", "")
-  |> string.replace("/", ":")
-}
-
-/// Formats all generated files in the output directory.
-/// Runs gleam format to ensure consistent code style in
-/// the compiled template output.
+/// Generated code is machine-written and unformatted, so we run 
+/// gleam format to keep it readable for debugging and to match 
+/// the project's code style.
 ///
 fn format_generated_files() -> Nil {
-  let _ = shellout.command("gleam", ["format", output_path], ".", [])
+  let _ = shellout.command("gleam", ["format", loom.output_path], ".", [])
   Nil
 }
 
-/// Validates generated files by running gleam check. Reverts
-/// any files that cause compilation errors and reports the
-/// failure to the user.
-///
-fn validate_generated_files(compiled_files: List(CompiledFile)) -> Nil {
-  case shellout.command("gleam", ["check"], ".", []) {
-    Ok(_) -> Nil
-    Error(#(_, msg)) -> {
-      // Find which compiled file has the error and revert it
-      list.each(compiled_files, fn(file) {
-        case string.contains(msg, file.output) {
-          True -> {
-            // Revert the file
-            let _ = simplifile.write(file.output, file.previous)
-            io.println(console.error(
-              "Generated code failed to compile for "
-              <> file.source
-              <> "\n"
-              <> extract_error_message(msg, file.output),
-            ))
-          }
-          False -> Nil
-        }
-      })
-    }
-  }
-}
-
-/// Compiles a single template file to Gleam code. Runs the
-/// lexer, parser, and generator, then writes the output and
-/// returns a CompiledFile for validation tracking.
+/// Runs the full compilation pipeline for a single file.
+/// Validation happens before generation so invalid templates 
+/// fail fast without producing broken output.
 ///
 fn compile_file(
   path: String,
   component_data: generator.ComponentDataMap,
   component_slots: generator.ComponentSlotMap,
   verbose: Bool,
-) -> Result(CompiledFile, Nil) {
+) -> Result(Nil, String) {
   let is_component = string.contains(path, "components/")
 
-  case simplifile.read(path) {
-    Error(_) -> {
-      io.println(console.error("Failed to read file: " <> path))
-      Error(Nil)
-    }
-    Ok(content) -> {
-      case lexer.tokenize(content) {
-        Error(err) -> {
-          io.println(console.error(
-            "Lexer error in " <> path <> ": " <> lexer_error_to_string(err),
-          ))
-          Error(Nil)
-        }
-        Ok(tokens) -> {
-          case parser.parse(tokens) {
-            Error(err) -> {
-              io.println(console.error(
-                "Parser error in "
-                <> path
-                <> ": "
-                <> parser_error_to_string(err),
-              ))
-              Error(Nil)
-            }
-            Ok(template) -> {
-              let module_name = path_to_module_name(path)
-              // Try to parse the corresponding app/loom file for Data type
-              let view_file_path = path_to_view_file(path)
-              let view_file = case
-                gleam_parser.parse_view_file(view_file_path)
-              {
-                Ok(parsed) -> Some(parsed)
-                Error(_) -> None
-              }
-              let generated =
-                generator.generate(
-                  template,
-                  module_name,
-                  is_component,
-                  view_file,
-                  component_data,
-                  component_slots,
-                )
-              let output_file = path_to_output_path(path)
+  use content <- result.try(
+    simplifile.read(path)
+    |> result.map_error(fn(_) { "Failed to read file: " <> path }),
+  )
+  use tokens <- result.try(
+    lexer.tokenize(content)
+    |> result.map_error(fn(err) {
+      "Lexer error in " <> path <> ": " <> lexer_error_to_string(err)
+    }),
+  )
+  use template <- result.try(
+    parser.parse(tokens)
+    |> result.map_error(fn(err) {
+      "Parser error in " <> path <> ": " <> parser_error_to_string(err)
+    }),
+  )
+  use _ <- result.try(generator.validate_template(template, path))
 
-              let _ = filesystem.ensure_directory_exists(output_file)
+  let module_name = path_to_module_name(path)
 
-              // Read previous content for potential revert
-              let previous_content =
-                simplifile.read(output_file) |> result.unwrap("")
-
-              case simplifile.write(output_file, generated.code) {
-                Ok(_) -> {
-                  case verbose {
-                    True ->
-                      console.output()
-                      |> console.unpadded()
-                      |> console.line(
-                        "  " <> path <> " -> " <> console.success(output_file),
-                      )
-                      |> console.print()
-                    False -> Nil
-                  }
-                  Ok(CompiledFile(path, output_file, previous_content))
-                }
-                Error(_) -> {
-                  io.println(console.error("Failed to write: " <> output_file))
-                  Error(Nil)
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+  let generated = {
+    generator.generate(
+      template,
+      module_name,
+      is_component,
+      component_data,
+      component_slots,
+    )
   }
-}
 
-/// Finds all loom template files in a directory. Recursively
-/// searches for files ending in .loom.html and returns their
-/// full paths.
-///
-fn find_loom_files(dir: String) -> List(String) {
-  case simplifile.get_files(dir) {
-    Error(_) -> []
-    Ok(files) -> list.filter(files, fn(f) { string.ends_with(f, ".loom.html") })
-  }
-}
+  let output_file = path_to_output_path(path)
+  let _ = filesystem.ensure_directory_exists(output_file)
 
-/// Builds a map of component names to their Data fields.
-/// Parses all component view files to extract their type
-/// information for prop generation.
-///
-fn build_component_data_map() -> generator.ComponentDataMap {
-  // Find all component view files in app/loom/components/
-  let component_view_files =
-    find_component_view_files(app_loom_path <> "components/")
+  use _ <- result.try(
+    simplifile.write(output_file, generated.code)
+    |> result.map_error(fn(_) { "Failed to write: " <> output_file }),
+  )
 
-  // Parse each one and build the map
-  component_view_files
-  |> list.filter_map(fn(path) {
-    case gleam_parser.parse_view_file(path) {
-      Error(_) -> Error(Nil)
-      Ok(parsed) -> {
-        // Extract component name from path
-        // e.g., src/app/loom/components/button.gleam -> "button"
-        let name = component_name_from_path(path)
-        Ok(#(name, parsed.fields))
-      }
+  // Register live modules in the registry (pages and components alike,
+  // since live components now get their own data-l-live containers)
+  case template.is_live {
+    True -> {
+      let _ = registry.register_module(module_name, path)
+      Nil
     }
-  })
-  |> dict.from_list
+    False -> Nil
+  }
+
+  case verbose {
+    True -> {
+      console.output()
+      |> console.line("  " <> path <> " -> " <> console.success(output_file))
+      |> console.print()
+    }
+    False -> Nil
+  }
+
+  Ok(Nil)
 }
 
-/// Builds a map of component names to their slot info. Parses
-/// component templates to determine which slots each component
-/// defines for proper slot argument generation.
+/// Builds both the component data map and slot map in a single 
+/// pass over the component files. Avoids reading and parsing 
+/// each component template twice.
 ///
-fn build_component_slot_map(
+fn build_component_maps(
   component_files: List(String),
-) -> generator.ComponentSlotMap {
-  component_files
-  |> list.filter_map(fn(path) {
-    case simplifile.read(path) {
-      Error(_) -> Error(Nil)
-      Ok(content) -> {
-        case lexer.tokenize(content) {
-          Error(_) -> Error(Nil)
-          Ok(tokens) -> {
-            case parser.parse(tokens) {
-              Error(_) -> Error(Nil)
-              Ok(template) -> {
-                // Extract component name from path
-                // e.g., src/resources/views/components/button.loom.html -> "button"
-                let name = component_name_from_template_path(path)
-                let slot_info = generator.extract_slot_info(template)
-                Ok(#(name, slot_info))
-              }
-            }
-          }
-        }
-      }
-    }
-  })
-  |> dict.from_list
-}
+) -> #(ComponentDataMap, ComponentSlotMap) {
+  let entries = {
+    list.filter_map(component_files, fn(path) {
+      // Read the file contents from disk
+      use content <- result.try(
+        simplifile.read(path) |> result.replace_error(Nil),
+      )
 
-/// Builds component slot map for all components. Convenience
-/// function that discovers all component files and builds
-/// the complete slot map.
-///
-fn build_component_slot_map_all() -> generator.ComponentSlotMap {
-  let component_files =
-    find_loom_files(views_path)
-    |> list.filter(fn(f) { string.contains(f, "components/") })
-  build_component_slot_map(component_files)
-}
+      // Tokenize the raw content into lexer tokens
+      use tokens <- result.try(
+        lexer.tokenize(content) |> result.replace_error(Nil),
+      )
 
-/// Finds all component view files in a directory. Searches
-/// for .gleam files that define component Data types and
-/// returns their full paths.
-///
-fn find_component_view_files(dir: String) -> List(String) {
-  case simplifile.get_files(dir) {
-    Error(_) -> []
-    Ok(files) -> list.filter(files, fn(f) { string.ends_with(f, ".gleam") })
+      // Parse the tokens into a template AST
+      use template <- result.try(
+        parser.parse(tokens) |> result.replace_error(Nil),
+      )
+
+      let name = component_name_from_template_path(path)
+      let slot_info = generator.extract_slot_info(template)
+
+      Ok(#(name, template.props, template.is_live, slot_info))
+    })
   }
+
+  let #(data_map, slot_map) = {
+    entries
+    |> list.fold(#(dict.new(), dict.new()), fn(acc, e) {
+      let #(data, slots) = acc
+      let #(name, props, is_live, slot_info) = e
+
+      #(
+        dict.insert(data, name, generator.ComponentData(props:, is_live:)),
+        dict.insert(slots, name, slot_info),
+      )
+    })
+  }
+
+  #(data_map, slot_map)
 }
 
-/// Extracts the component name from a view file path. Strips
-/// the base directory and extension, converting slashes to
-/// colons for namespaced component names.
-///
-fn component_name_from_path(path: String) -> String {
-  path
-  |> string.replace(app_loom_path <> "components/", "")
-  |> string.replace(".gleam", "")
-  |> string.replace("/", ":")
-}
-
-/// Converts a template path to a module name. Strips the
-/// base directory and extension, replacing slashes with
-/// underscores for valid Gleam module names.
+/// The module name must match the output file location so that 
+/// Gleam's import system can find the compiled template 
+/// (e.g., "compiled/loom/pages/home").
 ///
 fn path_to_module_name(path: String) -> String {
-  path
-  |> string.replace(views_path, "")
-  |> string.replace(".loom.html", "")
-  |> string.replace("/", "_")
+  let relative =
+    path
+    |> string.replace(loom.views_path, "")
+    |> string.replace(".loom.html", "")
+
+  // Remove leading slash if present
+  let relative = case string.starts_with(relative, "/") {
+    True -> string.drop_start(relative, 1)
+    False -> relative
+  }
+
+  "compiled/loom/" <> relative
 }
 
-/// Converts a template path to its output path. Maps from
-/// the views directory to the bootstrap/gen/loom directory
-/// with .gleam extension.
+/// Maps source template paths to their compiled output location 
+/// so generated .gleam files mirror the same directory 
+/// structure as the source templates.
 ///
 fn path_to_output_path(path: String) -> String {
   let relative =
     path
-    |> string.replace(views_path, "")
+    |> string.replace(loom.views_path, "")
     |> string.replace(".loom.html", ".gleam")
 
-  output_path <> relative
+  loom.output_path <> relative
 }
 
-/// Converts a template path to its view file path. Maps from
-/// views directory to app/loom directory, e.g.,
-/// src/resources/views/home.loom.html -> src/app/loom/home.gleam
-///
-fn path_to_view_file(path: String) -> String {
-  let relative =
-    path
-    |> string.replace(views_path, "")
-    |> string.replace(".loom.html", ".gleam")
-
-  app_loom_path <> relative
-}
-
-/// Converts a view file path to its template path. Maps from
-/// app/loom directory to views directory, e.g.,
-/// src/app/loom/home.gleam -> src/resources/views/home.loom.html
-///
-fn view_file_to_template_path(path: String) -> String {
-  let relative =
-    path
-    |> string.replace(app_loom_path, "")
-    |> string.replace(".gleam", ".loom.html")
-
-  views_path <> relative
-}
-
-/// Converts a lexer error to a human-readable string. Formats
-/// the error type and position information for display in
-/// error messages.
+/// Translates internal lexer errors into user-facing messages 
+/// with position info so developers can locate the problem 
+/// in their template source.
 ///
 fn lexer_error_to_string(err: lexer.LexerError) -> String {
   case err {
-    lexer.UnterminatedVariable(pos) ->
-      "Unterminated variable at position " <> int.to_string(pos)
-    lexer.InvalidVariableName(name, pos) ->
-      "Invalid variable name '"
-      <> name
-      <> "' at position "
-      <> int.to_string(pos)
-      <> " (variable names cannot contain spaces)"
+    lexer.UnterminatedExpression(pos) ->
+      "Unterminated expression at position " <> int.to_string(pos)
+    lexer.EmptyExpression(pos) ->
+      "Empty expression at position " <> int.to_string(pos)
     lexer.UnterminatedDirective(pos) ->
       "Unterminated directive at position " <> int.to_string(pos)
     lexer.InvalidDirective(dir, pos) ->
@@ -766,12 +470,27 @@ fn lexer_error_to_string(err: lexer.LexerError) -> String {
       <> content
       <> "' at position "
       <> int.to_string(pos)
+    lexer.InvalidPropsDirective(content, line) ->
+      "Invalid @props directive '"
+      <> content
+      <> "' at line "
+      <> int.to_string(line)
+      <> " (expected: @props(name: Type, ...))"
+    lexer.InvalidImportDirective(content, line) ->
+      "Invalid @import directive '"
+      <> content
+      <> "' at line "
+      <> int.to_string(line)
+    lexer.UnterminatedPropsDirective(line) ->
+      "Unterminated @props directive at line " <> int.to_string(line)
+    lexer.UnterminatedImportDirective(line) ->
+      "Unterminated @import directive at line " <> int.to_string(line)
   }
 }
 
-/// Converts a parser error to a human-readable string. Formats
-/// the error type and context information for display in
-/// error messages.
+/// Translates internal parser errors into user-facing messages 
+/// with context so developers can understand and fix structural 
+/// issues in their templates.
 ///
 fn parser_error_to_string(err: parser.ParserError) -> String {
   case err {
@@ -795,24 +514,14 @@ fn parser_error_to_string(err: parser.ParserError) -> String {
           "Unclosed <slot name=\"" <> n <> "\"> - missing </slot>"
         option.None -> "Unclosed <slot> - missing </slot>"
       }
-  }
-}
-
-/// Extracts the relevant error message from gleam check output.
-/// Finds the section related to the specific file and returns
-/// a condensed error message for display.
-///
-fn extract_error_message(msg: String, file_path: String) -> String {
-  // Try to find the error section related to our file
-  case string.split_once(msg, file_path) {
-    Ok(#(_, after_path)) -> {
-      // Take the first meaningful part of the error
-      let lines = string.split(after_path, "\n")
-      lines
-      |> list.take(10)
-      |> list.filter(fn(line) { string.trim(line) != "" })
-      |> string.join("\n")
-    }
-    Error(_) -> msg
+    parser.DirectiveAfterContent(directive, line) ->
+      directive
+      <> " directive at line "
+      <> int.to_string(line)
+      <> " must appear before template content"
+    parser.DuplicatePropsDirective(line) ->
+      "Duplicate @props directive at line "
+      <> int.to_string(line)
+      <> " - combine into single @props"
   }
 }

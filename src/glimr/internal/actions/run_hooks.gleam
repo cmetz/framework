@@ -9,7 +9,7 @@ import gleam/dict
 import gleam/io
 import gleam/list
 import gleam/string
-import glimr/console/command.{type Command, Command, ParsedArgs}
+import glimr/internal/actions/compile_commands
 import shellout
 
 /// Runs a list of hook commands sequentially. Stops and returns
@@ -69,8 +69,8 @@ fn run_hook(cmd: String) -> Result(Nil, String) {
 }
 
 /// Executes an internal Glimr command by name. Looks up the
-/// command in the stored commands list and calls its handler.
-/// Falls back to external execution for database commands.
+/// command in the registry and calls its main() function
+/// dynamically to avoid spawning a new BEAM VM.
 ///
 fn run_internal_command(cmd: String) -> Result(Nil, String) {
   let parts =
@@ -80,46 +80,35 @@ fn run_internal_command(cmd: String) -> Result(Nil, String) {
     |> string.split(" ")
 
   let name = list.first(parts) |> unwrap_or("")
-  let args = list.drop(parts, 1)
-  let options = parse_options(args)
-  let commands = command.get_commands()
 
-  case find_command(commands, name) {
-    Ok(Command(handler:, ..)) -> {
-      let parsed_args = ParsedArgs(dict.new(), [], options)
-      handler(parsed_args)
-      Ok(Nil)
-    }
-    Ok(_) -> {
-      // CommandWithDb or CommandWithCache - fall back to external
-      run_external_command(cmd)
+  case compile_commands.read_registry() {
+    Ok(registry) -> {
+      case dict.get(registry, name) {
+        Ok(info) -> {
+          // Convert module path to Erlang atom format
+          // glimr/internal/console/commands/build -> glimr@internal@console@commands@build
+          let module = string.replace(info.module, "/", "@")
+          call_module_main(module)
+          Ok(Nil)
+        }
+        Error(_) -> {
+          Error("Unknown command: " <> name)
+        }
+      }
     }
     Error(_) -> {
-      Error("Unknown command: " <> name)
+      // Registry not found, fall back to external
+      run_external_command(cmd)
     }
   }
 }
 
-/// Parses command line options from argument list. Extracts
-/// --key=value pairs and returns them as a dictionary,
-/// ignoring non-option arguments.
+/// Dynamically calls a module's main() function using Erlang
+/// apply/3. The module string should be in Erlang atom format
+/// (e.g., "glimr@internal@console@commands@build").
 ///
-fn parse_options(args: List(String)) -> dict.Dict(String, String) {
-  args
-  |> list.filter_map(fn(arg) {
-    case string.starts_with(arg, "--") {
-      True -> {
-        let without_dashes = string.drop_start(arg, 2)
-        case string.split_once(without_dashes, "=") {
-          Ok(#(key, value)) -> Ok(#(key, value))
-          Error(_) -> Error(Nil)
-        }
-      }
-      False -> Error(Nil)
-    }
-  })
-  |> dict.from_list
-}
+@external(erlang, "glimr_hooks_ffi", "call_module_main")
+fn call_module_main(module: String) -> Nil
 
 /// Unwraps a Result, returning the Ok value or a default.
 /// Provides a fallback value when the result contains an
@@ -130,14 +119,6 @@ fn unwrap_or(result: Result(a, e), default: a) -> a {
     Ok(value) -> value
     Error(_) -> default
   }
-}
-
-/// Searches the command list for a command matching the given
-/// name. Returns Ok with the command if found, or Error if
-/// no command matches.
-///
-fn find_command(commands: List(Command), name: String) -> Result(Command, Nil) {
-  list.find(commands, fn(cmd) { cmd.name == name })
 }
 
 /// Executes an external command via /bin/sh. Prints any output

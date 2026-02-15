@@ -1,36 +1,43 @@
 //// Route Compiler
 ////
-//// Parses route definition files and generates optimized dispatch
-//// code. Handles route grouping, middleware, and path parameters.
+//// Generates optimized dispatch code from parsed routes. Takes
+//// routes from the annotation parser and produces pattern
+//// matching code with middleware support.
 
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
+import gleam/option
 import gleam/order
+import gleam/regexp
 import gleam/result
 import gleam/string
+import glimr/routing/annotation_parser.{
+  type FunctionParam, type ParseResult, type ParsedRoute, ParsedRedirect,
+  ParsedRoute,
+}
 import shellout
 import simplifile
 
+// ------------------------------------------------------------- Private Constants
+
+/// Base path for middleware modules. Bare middleware names
+/// are expanded to this path, e.g., "logger" becomes
+/// "app/http/middleware/logger".
+///
+const middleware_base_path = "app/http/middleware/"
+
+/// Base path for validator modules. Bare validator names
+/// are expanded to this path, e.g., "user_validator" becomes
+/// "app/http/validators/user_validator".
+///
+const validator_base_path = "app/http/validators/"
+
 // ------------------------------------------------------------- Public Types
 
-/// Represents a parsed route from a route definition file.
-/// ParsedRoute holds HTTP method routes with handlers and
-/// middleware. ParsedRedirect holds redirect configurations.
-///
-pub type ParsedRoute {
-  ParsedRoute(
-    method: String,
-    path: String,
-    handler: String,
-    middleware: List(String),
-  )
-  ParsedRedirect(from: String, to: String, status: Int)
-}
-
-/// Result of compiling a route file. Contains the extracted
-/// imports, generated dispatch code, used HTTP methods, and
-/// line-to-route mapping for error reporting.
+/// Result of compiling routes. Contains the extracted imports,
+/// generated dispatch code, used HTTP methods, and line-to-route
+/// mapping for error reporting.
 ///
 pub type CompileResult {
   CompileResult(
@@ -38,29 +45,61 @@ pub type CompileResult {
     routes_code: String,
     used_methods: List(String),
     uses_middleware: Bool,
+    uses_validator: Bool,
+    uses_req: Bool,
+    uses_ctx: Bool,
     line_to_route: Dict(Int, String),
   )
 }
 
+// ------------------------------------------------------------- Private Types
+
+/// Type of module validation error. Indicates whether the
+/// module file was not found or exists but lacks the required
+/// public function.
+///
+type ModuleError {
+  ModuleNotFound(name: String)
+  ModuleMissingFunction(name: String, function: String)
+}
+
 // ------------------------------------------------------------- Public Functions
 
-/// Compiles a route definition file into dispatch code. Reads
-/// the source file, parses routes, and generates optimized
-/// pattern matching code.
+/// Compiles a list of parsed routes into dispatch code. Takes
+/// controller module paths and their parse results, generating 
+/// optimized pattern matching code.
 ///
-pub fn compile_file(source_path: String) -> Result(CompileResult, String) {
-  use content <- result.try(
-    simplifile.read(source_path)
-    |> result.map_error(fn(_) { "Failed to read file: " <> source_path }),
-  )
+pub fn compile_routes(
+  controller_results: List(#(String, ParseResult)),
+) -> Result(CompileResult, String) {
+  let controller_routes =
+    list.map(controller_results, fn(entry) {
+      let #(module_path, result) = entry
+      #(module_path, result.routes)
+    })
 
-  let imports = extract_imports(content)
-  let routes = parse_routes(content)
+  let routes =
+    controller_routes
+    |> list.flat_map(fn(entry) {
+      let #(module_path, routes) = entry
+      list.map(routes, fn(route) { prefix_handler(route, module_path) })
+    })
 
+  use _ <- result.try(validate_path_format(routes))
   use _ <- result.try(validate_path_params(routes))
+  use _ <- result.try(validate_group_middleware(controller_results))
+  use _ <- result.try(validate_route_middleware(controller_results))
+  use _ <- result.try(validate_validators(controller_results))
+  use _ <- result.try(validate_handler_params(routes))
+  use _ <- result.try(validate_type_imports(controller_results))
 
+  let imports = generate_imports(controller_routes, routes)
   let used_methods = collect_used_methods(routes)
   let uses_middleware = check_uses_middleware(routes)
+  let uses_validator = check_uses_validator(routes)
+  let uses_req = check_uses_request(routes)
+  let uses_ctx = check_uses_context(routes)
+
   let #(routes_code, line_to_route) =
     generate_code(
       routes,
@@ -70,15 +109,256 @@ pub fn compile_file(source_path: String) -> Result(CompileResult, String) {
     )
 
   Ok(CompileResult(
-    imports: imports,
-    routes_code: routes_code,
-    used_methods: used_methods,
-    uses_middleware: uses_middleware,
-    line_to_route: line_to_route,
+    imports:,
+    routes_code:,
+    used_methods:,
+    uses_middleware:,
+    uses_validator:,
+    uses_req:,
+    uses_ctx:,
+    line_to_route:,
   ))
 }
 
+/// Writes the compiled route file to disk. Assembles imports,
+/// dispatch code, and function wrapper, then validates with
+/// gleam check before formatting.
+///
+pub fn write_compiled_file(
+  compile_result: CompileResult,
+  dest_path: String,
+) -> Result(Nil, String) {
+  let imports_str = string.join(compile_result.imports, "\n")
+
+  let has_routes = compile_result.used_methods != []
+
+  let http_import = case compile_result.used_methods {
+    [] -> ""
+    methods -> "\nimport gleam/http.{" <> string.join(methods, ", ") <> "}"
+  }
+
+  let middleware_import = case compile_result.uses_middleware {
+    True -> "\nimport glimr/http/middleware"
+    False -> ""
+  }
+
+  // Middleware and validators need req/ctx even if handlers don't use them directly
+  let needs_req =
+    compile_result.uses_req
+    || compile_result.uses_middleware
+    || compile_result.uses_validator
+  let needs_ctx =
+    compile_result.uses_ctx
+    || compile_result.uses_middleware
+    || compile_result.uses_validator
+  let req_arg = case needs_req {
+    True -> "req"
+    False -> "_req"
+  }
+  let ctx_arg = case needs_ctx {
+    True -> "ctx"
+    False -> "_ctx"
+  }
+  let fn_args = case has_routes {
+    True -> "path, method, " <> req_arg <> ", " <> ctx_arg
+    False -> "path, _method, _req, _ctx"
+  }
+
+  let generated_comment =
+    "//// This file was generated by Glimr ✨
+//// https://github.com/glimr-org/glimr?tab=readme-ov-file#routes
+////
+//// DO NOT EDIT THIS FILE. If you would like to use plain pattern
+//// matching over this compiled route approach, take a look at
+//// the docs link below detailing how to do so.
+////
+//// See: https://github.com/glimr-org/glimr?tab=readme-ov-file#direct-pattern-matching
+////
+
+"
+
+  let content =
+    generated_comment
+    <> imports_str
+    <> http_import
+    <> middleware_import
+    <> "\nimport wisp"
+    <> "\n\npub fn routes("
+    <> fn_args
+    <> ") {\n"
+    <> compile_result.routes_code
+    <> "\n}\n"
+
+  let previous_content = simplifile.read(dest_path) |> result.unwrap("")
+
+  case simplifile.write(dest_path, content) {
+    Ok(_) -> {
+      // Check BEFORE formatting so line numbers match our mapping
+      case shellout.command("gleam", ["check"], in: ".", opt: []) {
+        Ok(_) -> {
+          let _ =
+            shellout.command("gleam", ["format", dest_path], in: ".", opt: [])
+          Ok(Nil)
+        }
+        Error(#(_, msg)) -> {
+          case string.contains(msg, dest_path) {
+            True -> {
+              let _ = simplifile.write(dest_path, previous_content)
+              let route_path =
+                find_route_from_error(
+                  msg,
+                  dest_path,
+                  compile_result.line_to_route,
+                )
+              let route_hint = case route_path {
+                Ok(path) -> " (route: " <> path <> ")"
+                Error(_) -> ""
+              }
+              let specific_hint = get_specific_error_hint(msg)
+              Error(
+                "Failed to compile "
+                <> dest_path
+                <> route_hint
+                <> "\n"
+                <> specific_hint,
+              )
+            }
+            False -> {
+              let _ =
+                shellout.command(
+                  "gleam",
+                  ["format", dest_path],
+                  in: ".",
+                  opt: [],
+                )
+              Ok(Nil)
+            }
+          }
+        }
+      }
+    }
+    Error(_) -> Error("Failed to write file: " <> dest_path)
+  }
+}
+
 // ------------------------------------------------------------- Private Functions
+
+/// Expands a bare middleware name to its full module path.
+/// Prepends the middleware base path to the given name.
+/// Example: "logger" becomes "app/http/middleware/logger".
+///
+fn expand_middleware_path(name: String) -> String {
+  middleware_base_path <> name
+}
+
+/// Expands a bare validator name to its full module path.
+/// Prepends the validator base path to the given name.
+/// Example: "user" becomes "app/http/validators/user".
+///
+fn expand_validator_path(name: String) -> String {
+  validator_base_path <> name
+}
+
+/// Module paths like "app/http/validators/user" need to be
+/// converted to just the module name "user" for generating
+/// import aliases and function calls in compiled code.
+///
+fn last_segment(path: String) -> String {
+  case string.split(path, "/") |> list.last {
+    Ok(name) -> name
+    Error(_) -> path
+  }
+}
+
+/// Extracts the validator module name from its path.
+/// Handles both bare names and full paths.
+/// Example: "api/user" -> "user", "user" -> "user"
+///
+fn validator_module_name(validator: String) -> String {
+  last_segment(validator)
+}
+
+/// Generates a unique alias for a controller module path.
+/// Takes everything after "controllers/" and joins with 
+/// underscores.
+///
+/// e.g., "app/http/controllers/api/home_controller" -> "api_home_controller"
+///
+fn controller_alias(module_path: String) -> String {
+  case string.split_once(module_path, "controllers/") {
+    Ok(#(_, after)) -> string.replace(after, "/", "_")
+    Error(_) -> last_segment(module_path)
+  }
+}
+
+/// Prefixes a route handler with the controller module alias.
+/// Uses a unique alias based on path after "controllers/".
+/// Redirects are returned unchanged since they have no handler.
+///
+fn prefix_handler(route: ParsedRoute, module_path: String) -> ParsedRoute {
+  let alias = controller_alias(module_path)
+
+  case route {
+    ParsedRoute(method:, path:, handler:, middleware:, validator:, params:) ->
+      ParsedRoute(
+        method:,
+        path:,
+        handler: alias <> "." <> handler,
+        middleware:,
+        validator:,
+        params:,
+      )
+    ParsedRedirect(..) -> route
+  }
+}
+
+/// Generates import statements for controller, middleware,
+/// and validator modules. Creates `import module/path` for each.
+/// Uses `as` alias for nested controllers to avoid conflicts.
+///
+fn generate_imports(
+  controller_routes: List(#(String, List(ParsedRoute))),
+  routes: List(ParsedRoute),
+) -> List(String) {
+  let controller_imports =
+    controller_routes
+    |> list.filter(fn(entry) { !list.is_empty(entry.1) })
+    |> list.map(fn(entry) {
+      let module_path = entry.0
+      let alias = controller_alias(module_path)
+      let default_name = last_segment(module_path)
+      // Use `as` alias when the alias differs from the default module name
+      case alias == default_name {
+        True -> "import " <> module_path
+        False -> "import " <> module_path <> " as " <> alias
+      }
+    })
+
+  let middleware_imports =
+    routes
+    |> list.flat_map(fn(r) {
+      case r {
+        ParsedRoute(middleware:, ..) -> middleware
+        ParsedRedirect(..) -> []
+      }
+    })
+    |> list.unique
+    |> list.map(fn(m) { "import " <> expand_middleware_path(m) })
+
+  let validator_imports =
+    routes
+    |> list.filter_map(fn(r) {
+      case r {
+        ParsedRoute(validator: option.Some(v), ..) ->
+          Ok("import " <> expand_validator_path(v))
+        _ -> Error(Nil)
+      }
+    })
+    |> list.unique
+
+  list.flatten([controller_imports, middleware_imports, validator_imports])
+  |> list.unique
+}
 
 /// Checks if any route uses middleware. Used to determine
 /// whether to include the middleware import in the generated
@@ -91,6 +371,94 @@ fn check_uses_middleware(routes: List(ParsedRoute)) -> Bool {
       ParsedRedirect(..) -> False
     }
   })
+}
+
+/// Checks if any route handler uses a Request parameter.
+/// Used to determine whether to use `req` or `_req` in the
+/// generated routes function signature.
+///
+fn check_uses_request(routes: List(ParsedRoute)) -> Bool {
+  list.any(routes, fn(r) {
+    case r {
+      ParsedRoute(params:, ..) -> list.any(params, is_request_param)
+      ParsedRedirect(..) -> False
+    }
+  })
+}
+
+/// Checks if any route handler uses a Context parameter.
+/// Used to determine whether to use `ctx` or `_ctx` in the
+/// generated routes function signature.
+///
+fn check_uses_context(routes: List(ParsedRoute)) -> Bool {
+  list.any(routes, fn(r) {
+    case r {
+      ParsedRoute(params:, ..) -> list.any(params, is_context_param)
+      ParsedRedirect(..) -> False
+    }
+  })
+}
+
+/// Checks if any route uses a validator. Used to determine
+/// whether to use `req`/`ctx` or `_req`/`_ctx` in the
+/// generated routes function signature, since validators
+/// need access to req and ctx.
+///
+fn check_uses_validator(routes: List(ParsedRoute)) -> Bool {
+  list.any(routes, fn(r) {
+    case r {
+      ParsedRoute(validator: option.Some(_), ..) -> True
+      _ -> False
+    }
+  })
+}
+
+/// Validates route path format. Paths must start with / and 
+/// contain only valid characters: letters, numbers, hyphens, 
+/// underscores, slashes, and colon parameters.
+///
+fn validate_path_format(routes: List(ParsedRoute)) -> Result(Nil, String) {
+  let invalid =
+    routes
+    |> list.filter_map(fn(r) {
+      case r {
+        ParsedRoute(path:, handler:, ..) ->
+          case is_valid_path(path) {
+            True -> Error(Nil)
+            False -> Ok(#(path, handler))
+          }
+        ParsedRedirect(from:, to:, ..) ->
+          case is_valid_path(from) {
+            True -> Error(Nil)
+            False -> Ok(#(from, "redirect to " <> to))
+          }
+      }
+    })
+
+  case invalid {
+    [] -> Ok(Nil)
+    [#(path, handler), ..] ->
+      Error(
+        "Invalid route '"
+        <> path
+        <> "' for "
+        <> handler
+        <> "\n"
+        <> "Path must contain only slashes, letters, numbers, hyphens, underscores, or :params",
+      )
+  }
+}
+
+/// Checks if a path is valid using regex. Valid segments are 
+/// either static (letters, numbers, hyphens, underscores) or 
+/// parameters (colon followed by valid identifier).
+///
+fn is_valid_path(path: String) -> Bool {
+  // Static segment: [a-zA-Z0-9_-]+
+  // Param segment: :[a-zA-Z_][a-zA-Z0-9_]*
+  let assert Ok(re) =
+    regexp.from_string("^(/([a-zA-Z0-9_-]+|:[a-zA-Z_][a-zA-Z0-9_]*))+$|^/$")
+  regexp.check(re, path)
 }
 
 /// Validates that no path parameters use reserved names.
@@ -131,6 +499,499 @@ fn validate_path_params(routes: List(ParsedRoute)) -> Result(Nil, String) {
   }
 }
 
+/// Middleware and validator modules can exist in src/ for
+/// production or test/fixtures/ for testing. This allows the
+/// compiler to validate modules in both locations.
+///
+fn find_module_file(base_path: String, name: String) -> Result(String, Nil) {
+  let full_path = base_path <> name
+  let src_path = "src/" <> full_path <> ".gleam"
+  let test_path = "test/fixtures/" <> full_path <> ".gleam"
+
+  case simplifile.is_file(src_path) {
+    Ok(True) -> Ok(src_path)
+    _ ->
+      case simplifile.is_file(test_path) {
+        Ok(True) -> Ok(test_path)
+        _ -> Error(Nil)
+      }
+  }
+}
+
+/// Validates that a module exists and exports the expected
+/// function. Catches missing middleware/validator modules
+/// early with clear errors rather than cryptic compile failures.
+///
+fn check_module(
+  name: String,
+  base_path: String,
+  required_function: String,
+) -> Result(Nil, ModuleError) {
+  case find_module_file(base_path, name) {
+    Ok(path) ->
+      case simplifile.read(path) {
+        Ok(content) ->
+          case string.contains(content, "pub fn " <> required_function <> "(") {
+            True -> Ok(Nil)
+            False -> Error(ModuleMissingFunction(name, required_function))
+          }
+        Error(_) -> Error(ModuleNotFound(name))
+      }
+    Error(_) -> Error(ModuleNotFound(name))
+  }
+}
+
+/// Middleware modules must have a public `run` function that
+/// matches the expected signature. Validating this early gives
+/// developers clear feedback about missing implementations.
+///
+fn check_middleware(name: String) -> Result(Nil, ModuleError) {
+  check_module(name, middleware_base_path, "run")
+}
+
+/// Error messages should guide developers to fix the problem.
+/// Different error types need different guidance - missing
+/// modules vs modules without the required function.
+///
+fn format_middleware_error(err: ModuleError) -> String {
+  case err {
+    ModuleNotFound(name) -> "Middleware \"" <> name <> "\" doesn't exist"
+    ModuleMissingFunction(name, _) ->
+      "Middleware \"" <> name <> "\" doesn't have a public \"run\" function"
+  }
+}
+
+/// Validates that all group middleware modules exist and have
+/// run function. Returns an error with controller-level message
+/// if any group middleware is invalid or missing.
+///
+fn validate_group_middleware(
+  controller_results: List(#(String, ParseResult)),
+) -> Result(Nil, String) {
+  let invalid =
+    controller_results
+    |> list.filter_map(fn(entry) {
+      let #(module_path, result) = entry
+      let alias = controller_alias(module_path)
+      let errors =
+        list.filter_map(result.group_middleware, fn(mw) {
+          case check_middleware(mw) {
+            Ok(_) -> Error(Nil)
+            Error(err) -> Ok(err)
+          }
+        })
+      case errors {
+        [] -> Error(Nil)
+        [err, ..] -> Ok(#(alias, err))
+      }
+    })
+
+  case invalid {
+    [] -> Ok(Nil)
+    [#(controller, err), ..] ->
+      Error(
+        "Invalid group middleware for "
+        <> controller
+        <> "\n"
+        <> format_middleware_error(err),
+      )
+  }
+}
+
+/// Validates that all route-specific middleware modules exist
+/// and have run function. Returns an error with route-level
+/// message if any route middleware is invalid or missing.
+///
+fn validate_route_middleware(
+  controller_results: List(#(String, ParseResult)),
+) -> Result(Nil, String) {
+  let invalid =
+    controller_results
+    |> list.flat_map(fn(entry) {
+      let #(module_path, result) = entry
+      let alias = controller_alias(module_path)
+      let group_mw = result.group_middleware
+      list.filter_map(result.routes, fn(r) {
+        case r {
+          ParsedRoute(path:, handler:, middleware:, ..) -> {
+            // Only check route-specific middleware (exclude group middleware)
+            let route_specific =
+              list.filter(middleware, fn(mw) { !list.contains(group_mw, mw) })
+            let errors =
+              list.filter_map(route_specific, fn(mw) {
+                case check_middleware(mw) {
+                  Ok(_) -> Error(Nil)
+                  Error(err) -> Ok(err)
+                }
+              })
+            case errors {
+              [] -> Error(Nil)
+              [err, ..] -> Ok(#(path, alias <> "." <> handler, err))
+            }
+          }
+          ParsedRedirect(..) -> Error(Nil)
+        }
+      })
+    })
+
+  case invalid {
+    [] -> Ok(Nil)
+    [#(path, handler, err), ..] ->
+      Error(
+        "Invalid route '"
+        <> path
+        <> "' for "
+        <> handler
+        <> "\n"
+        <> format_middleware_error(err),
+      )
+  }
+}
+
+/// Validator modules must have a public `validate` function.
+/// Validating this early gives developers clear feedback
+/// about missing implementations before route compilation.
+///
+fn check_validator(name: String) -> Result(Nil, ModuleError) {
+  check_module(name, validator_base_path, "validate")
+}
+
+/// Error messages should guide developers to fix the problem.
+/// Different error types need different guidance - missing
+/// modules vs modules without the required function.
+///
+fn format_validator_error(err: ModuleError) -> String {
+  case err {
+    ModuleNotFound(name) -> "Validator \"" <> name <> "\" doesn't exist"
+    ModuleMissingFunction(name, _) ->
+      "Validator \"" <> name <> "\" doesn't have a public \"validate\" function"
+  }
+}
+
+/// Validates that all validator modules exist and have validate 
+/// function. Returns an error with route-level message if any 
+/// validator is invalid or missing.
+///
+fn validate_validators(
+  controller_results: List(#(String, ParseResult)),
+) -> Result(Nil, String) {
+  let invalid =
+    controller_results
+    |> list.flat_map(fn(entry) {
+      let #(module_path, result) = entry
+      let alias = controller_alias(module_path)
+      list.filter_map(result.routes, fn(r) {
+        case r {
+          ParsedRoute(path:, handler:, validator: option.Some(v), ..) -> {
+            case check_validator(v) {
+              Ok(_) -> Error(Nil)
+              Error(err) -> Ok(#(path, alias <> "." <> handler, err))
+            }
+          }
+          _ -> Error(Nil)
+        }
+      })
+    })
+
+  case invalid {
+    [] -> Ok(Nil)
+    [#(path, handler, err), ..] ->
+      Error(
+        "Invalid route '"
+        <> path
+        <> "' for "
+        <> handler
+        <> "\n"
+        <> format_validator_error(err),
+      )
+  }
+}
+
+/// Validates that Request, Context, and Data types are properly imported.
+/// If a handler uses `Request` type (not `wisp.Request`), the file
+/// must have `import wisp.{type Request}`. Same for Context/ctx and
+/// validator Data types.
+///
+fn validate_type_imports(
+  controller_results: List(#(String, ParseResult)),
+) -> Result(Nil, String) {
+  let errors =
+    controller_results
+    |> list.flat_map(fn(entry) {
+      let #(module_path, result) = entry
+      let alias = controller_alias(module_path)
+
+      result.routes
+      |> list.filter_map(fn(r) {
+        case r {
+          ParsedRoute(path:, handler:, params:, validator:, ..) -> {
+            // Check for unqualified Request type without proper import
+            let has_unqualified_request =
+              list.any(params, fn(p) { p.param_type == "Request" })
+            let request_error = case
+              has_unqualified_request && !result.has_wisp_request_import
+            {
+              True ->
+                option.Some(#(
+                  path,
+                  alias <> "." <> handler,
+                  "Request type requires import: `import wisp.{type Request}`\n"
+                    <> "Or use fully qualified type: `req: wisp.Request`",
+                ))
+              False -> option.None
+            }
+
+            // Check for unqualified Context type without proper import
+            let has_unqualified_context =
+              list.any(params, fn(p) { p.param_type == "Context" })
+            let context_error = case
+              has_unqualified_context && !result.has_ctx_context_import
+            {
+              True ->
+                option.Some(#(
+                  path,
+                  alias <> "." <> handler,
+                  "Context type requires import: `import app/http/context/ctx.{type Context}`\n"
+                    <> "Or use fully qualified type: `ctx: ctx.Context`",
+                ))
+              False -> option.None
+            }
+
+            // Check for unqualified Data type without proper import
+            let data_error = case validator {
+              option.Some(v) -> {
+                let validator_name = validator_module_name(v)
+                let has_unqualified_data =
+                  list.any(params, fn(p) { p.param_type == "Data" })
+                let has_valid_import =
+                  list.contains(result.validator_data_imports, validator_name)
+                case has_unqualified_data && !has_valid_import {
+                  True ->
+                    option.Some(#(
+                      path,
+                      alias <> "." <> handler,
+                      "Data type requires import: `import app/http/validators/"
+                        <> validator_name
+                        <> ".{type Data}`\n"
+                        <> "Or use fully qualified type: `data: "
+                        <> validator_name
+                        <> ".Data`",
+                    ))
+                  False -> option.None
+                }
+              }
+              option.None -> option.None
+            }
+
+            case request_error, context_error, data_error {
+              option.Some(err), _, _ -> Ok(err)
+              _, option.Some(err), _ -> Ok(err)
+              _, _, option.Some(err) -> Ok(err)
+              option.None, option.None, option.None -> Error(Nil)
+            }
+          }
+          ParsedRedirect(..) -> Error(Nil)
+        }
+      })
+    })
+
+  case errors {
+    [] -> Ok(Nil)
+    [#(path, handler, msg), ..] ->
+      Error("Invalid route '" <> path <> "' for " <> handler <> "\n" <> msg)
+  }
+}
+
+/// Validates that handler function parameters match route
+/// definition. Checks: route params have matching function
+/// params, no extra params, and validator Data param is present
+/// when @validator is used.
+///
+fn validate_handler_params(routes: List(ParsedRoute)) -> Result(Nil, String) {
+  let errors =
+    routes
+    |> list.filter_map(fn(r) {
+      case r {
+        ParsedRoute(path:, handler:, validator:, params:, ..) -> {
+          let route_params = extract_params_from_path(path)
+          check_handler_params(path, handler, route_params, params, validator)
+        }
+        ParsedRedirect(..) -> Error(Nil)
+      }
+    })
+
+  case errors {
+    [] -> Ok(Nil)
+    [err, ..] -> Error(err)
+  }
+}
+
+/// Checks a single handler's parameters for validity. Verifies
+/// route params match function params and validates Data param
+/// presence when using @validator. Returns error if invalid.
+///
+fn check_handler_params(
+  path: String,
+  handler: String,
+  route_params: List(String),
+  fn_params: List(FunctionParam),
+  validator: option.Option(String),
+) -> Result(String, Nil) {
+  // First check for req/ctx params without type annotations
+  let untyped_req_ctx =
+    list.find(fn_params, fn(p) {
+      let name = string.lowercase(p.name)
+      let is_req_or_ctx =
+        name == "req" || name == "_req" || name == "ctx" || name == "_ctx"
+      is_req_or_ctx && p.param_type == ""
+    })
+
+  case untyped_req_ctx {
+    Ok(param) -> {
+      let expected_type = case string.lowercase(param.name) {
+        "req" | "_req" -> "Request"
+        _ -> "Context"
+      }
+      Ok(
+        "Handler "
+        <> handler
+        <> " has parameter '"
+        <> param.name
+        <> "' without a type annotation\n"
+        <> "Please specify the type: "
+        <> param.name
+        <> ": "
+        <> expected_type,
+      )
+    }
+    Error(_) -> {
+      // Get non-special params (not Request, Context, or Data)
+      let handler_route_params = get_route_param_names(fn_params, validator)
+
+      // Check for missing route params (route has :id but handler doesn't have id)
+      let missing =
+        list.filter(route_params, fn(rp) {
+          !list.contains(handler_route_params, rp)
+        })
+
+      case missing {
+        [param, ..] ->
+          Ok(
+            "Route '"
+            <> path
+            <> "' defines :"
+            <> param
+            <> " but handler "
+            <> handler
+            <> " has no matching parameter",
+          )
+        [] -> {
+          // Check for extra handler params (handler has 'name' but route has no :name)
+          let extra_params =
+            list.filter(fn_params, fn(p) {
+              let clean_name = case string.starts_with(p.name, "_") {
+                True -> string.drop_start(p.name, 1)
+                False -> p.name
+              }
+              !is_request_param(p)
+              && !is_context_param(p)
+              && !is_validator_data_param(p, validator)
+              && !list.contains(route_params, clean_name)
+            })
+
+          case extra_params {
+            [param, ..] -> {
+              let clean_name = case string.starts_with(param.name, "_") {
+                True -> string.drop_start(param.name, 1)
+                False -> param.name
+              }
+              let base_error =
+                "Handler "
+                <> handler
+                <> " has parameter '"
+                <> clean_name
+                <> "' but route '"
+                <> path
+                <> "' has no matching segment"
+
+              // Add hint for validated/data params
+              let lower_name = string.lowercase(clean_name)
+              let hint = case lower_name, validator {
+                "validated", option.Some(v) | "data", option.Some(v) ->
+                  "\nIf this is meant to be validated data, specify the type: "
+                  <> param.name
+                  <> ": "
+                  <> validator_module_name(v)
+                  <> ".Data"
+                _, _ -> ""
+              }
+
+              Ok(base_error <> hint)
+            }
+            [] -> {
+              // Check for missing validator Data param
+              case validator {
+                option.Some(v) -> {
+                  case has_validator_data_param(fn_params, v) {
+                    True -> Error(Nil)
+                    False ->
+                      Ok(
+                        "Route '"
+                        <> path
+                        <> "' uses @validator \""
+                        <> v
+                        <> "\" but handler "
+                        <> handler
+                        <> " has no Data parameter",
+                      )
+                  }
+                }
+                option.None -> Error(Nil)
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Extracts route parameter names from function params. Filters
+/// out Request, Context, and validator Data params, returning
+/// only the route path parameter names.
+///
+fn get_route_param_names(
+  fn_params: List(FunctionParam),
+  validator: option.Option(String),
+) -> List(String) {
+  fn_params
+  |> list.filter(fn(p) {
+    !is_request_param(p)
+    && !is_context_param(p)
+    && !is_validator_data_param(p, validator)
+  })
+  |> list.map(fn(p) {
+    // Strip leading underscore if present
+    case string.starts_with(p.name, "_") {
+      True -> string.drop_start(p.name, 1)
+      False -> p.name
+    }
+  })
+}
+
+/// Checks if function params include a validator Data parameter.
+/// Used to verify handlers with @validator have the required
+/// Data param for receiving validated form data.
+///
+fn has_validator_data_param(
+  fn_params: List(FunctionParam),
+  validator: String,
+) -> Bool {
+  list.any(fn_params, fn(p) {
+    is_validator_data_param(p, option.Some(validator))
+  })
+}
+
 /// Collects unique HTTP methods used across all routes.
 /// Returns capitalized method names for use in the http
 /// import statement.
@@ -144,569 +1005,6 @@ fn collect_used_methods(routes: List(ParsedRoute)) -> List(String) {
     }
   })
   |> list.unique
-}
-
-/// Extracts user imports from the source file. Filters out
-/// framework imports that will be added automatically to
-/// the compiled output.
-///
-fn extract_imports(content: String) -> List(String) {
-  content
-  |> string.split("\n")
-  |> list.filter(fn(line) {
-    let trimmed = string.trim(line)
-    string.starts_with(trimmed, "import ")
-    && !string.contains(trimmed, "glimr/routing/route")
-    && !string.contains(trimmed, "import wisp")
-    && !string.contains(trimmed, "import gleam/http")
-  })
-}
-
-/// Parses all routes from the file content. Extracts the body
-/// of the routes() function and recursively parses route
-/// definitions.
-///
-fn parse_routes(content: String) -> List(ParsedRoute) {
-  let define_body = extract_define_body(content)
-  parse_route_list(define_body, [], [])
-}
-
-/// Extracts the body of the routes() function. Finds the
-/// opening bracket and extracts content up to its matching
-/// closing bracket.
-///
-fn extract_define_body(content: String) -> String {
-  case string.split_once(content, "pub fn routes()") {
-    Ok(#(_, after)) -> {
-      case string.split_once(after, "[") {
-        Ok(#(_, rest)) -> find_matching_bracket(rest, 1, "")
-        Error(_) -> ""
-      }
-    }
-    Error(_) -> ""
-  }
-}
-
-/// Finds content up to a matching closing bracket. Tracks
-/// bracket depth to handle nested arrays correctly and
-/// returns accumulated content.
-///
-fn find_matching_bracket(content: String, depth: Int, acc: String) -> String {
-  case depth, string.pop_grapheme(content) {
-    0, _ -> acc
-    _, Ok(#("[", rest)) -> find_matching_bracket(rest, depth + 1, acc <> "[")
-    _, Ok(#("]", rest)) ->
-      case depth - 1 {
-        0 -> acc
-        new_depth -> find_matching_bracket(rest, new_depth, acc <> "]")
-      }
-    _, Ok(#(char, rest)) -> find_matching_bracket(rest, depth, acc <> char)
-    _, Error(_) -> acc
-  }
-}
-
-/// Recursively parses a list of route items. Maintains prefix
-/// and middleware stacks for nested groups and returns flat
-/// list of parsed routes.
-///
-fn parse_route_list(
-  content: String,
-  prefix_stack: List(String),
-  middleware_stack: List(List(String)),
-) -> List(ParsedRoute) {
-  let content = string.trim(content)
-
-  case content {
-    "" -> []
-    _ -> {
-      case find_next_route(content) {
-        Ok(#(route, rest)) -> {
-          let parsed = parse_single_item(route, prefix_stack, middleware_stack)
-          list.append(
-            parsed,
-            parse_route_list(rest, prefix_stack, middleware_stack),
-          )
-        }
-        Error(_) -> []
-      }
-    }
-  }
-}
-
-/// Finds the next route definition in content. Skips whitespace
-/// and comments, looking for route.* function calls to
-/// extract.
-///
-fn find_next_route(content: String) -> Result(#(String, String), Nil) {
-  let content = string.trim(content)
-
-  case content {
-    "" -> Error(Nil)
-    _ -> {
-      case
-        string.starts_with(content, "route.")
-        || string.starts_with(content, "//")
-      {
-        True -> {
-          let #(item, rest) = extract_route_item(content)
-          Ok(#(item, rest))
-        }
-        False -> {
-          case string.pop_grapheme(content) {
-            Ok(#(_, rest)) -> find_next_route(rest)
-            Error(_) -> Error(Nil)
-          }
-        }
-      }
-    }
-  }
-}
-
-/// Extracts a single route item from content. Handles comments
-/// by skipping to the next line and balanced expressions for
-/// actual route definitions.
-///
-fn extract_route_item(content: String) -> #(String, String) {
-  case string.starts_with(content, "//") {
-    True -> {
-      case string.split_once(content, "\n") {
-        Ok(#(_, rest)) -> #("", rest)
-        Error(_) -> #("", "")
-      }
-    }
-    False -> extract_balanced_expression(content, 0, 0, "")
-  }
-}
-
-/// Extracts a balanced expression tracking parentheses and
-/// brackets. Continues until both counts return to zero,
-/// indicating the expression is complete.
-///
-fn extract_balanced_expression(
-  content: String,
-  parens: Int,
-  brackets: Int,
-  acc: String,
-) -> #(String, String) {
-  case string.pop_grapheme(content) {
-    Ok(#("(", rest)) ->
-      extract_balanced_expression(rest, parens + 1, brackets, acc <> "(")
-    Ok(#(")", rest)) -> {
-      let new_parens = parens - 1
-      case new_parens == 0 && brackets == 0 {
-        True -> {
-          let #(piped, remaining) = check_for_pipe(rest)
-          #(acc <> ")" <> piped, remaining)
-        }
-        False ->
-          extract_balanced_expression(rest, new_parens, brackets, acc <> ")")
-      }
-    }
-    Ok(#("[", rest)) ->
-      extract_balanced_expression(rest, parens, brackets + 1, acc <> "[")
-    Ok(#("]", rest)) -> {
-      let new_brackets = brackets - 1
-      case new_brackets == 0 && parens == 0 {
-        True -> {
-          let #(piped, remaining) = check_for_pipe(rest)
-          #(acc <> "]" <> piped, remaining)
-        }
-        False ->
-          extract_balanced_expression(rest, parens, new_brackets, acc <> "]")
-      }
-    }
-    Ok(#(char, rest)) ->
-      extract_balanced_expression(rest, parens, brackets, acc <> char)
-    Error(_) -> #(acc, "")
-  }
-}
-
-/// Checks for and extracts piped expressions. Handles chained
-/// |> operators by recursively extracting each piped
-/// expression.
-///
-fn check_for_pipe(content: String) -> #(String, String) {
-  let trimmed = string.trim_start(content)
-  case string.starts_with(trimmed, "|>") {
-    True -> {
-      let after_pipe = string.drop_start(trimmed, 2)
-      let #(piped_expr, rest) =
-        extract_balanced_expression(after_pipe, 0, 0, "")
-      let #(more_piped, final_rest) = check_for_pipe(rest)
-      #(" |>" <> piped_expr <> more_piped, final_rest)
-    }
-    False -> #("", content)
-  }
-}
-
-/// Parses a single route item. Handles groups (prefix and
-/// middleware) differently from regular routes, applying
-/// accumulated context.
-///
-fn parse_single_item(
-  item: String,
-  prefix_stack: List(String),
-  middleware_stack: List(List(String)),
-) -> List(ParsedRoute) {
-  let item = string.trim(item)
-
-  case item {
-    "" -> []
-    _ -> {
-      let #(base_item, item_middleware) = extract_piped_middleware(item)
-      let all_middleware =
-        list.flatten(middleware_stack) |> list.append(item_middleware)
-
-      case
-        string.starts_with(base_item, "route.prefix(")
-        || string.starts_with(base_item, "route.group_middleware(")
-      {
-        True ->
-          parse_group(
-            base_item,
-            prefix_stack,
-            middleware_stack,
-            item_middleware,
-          )
-        False -> parse_route(base_item, prefix_stack, all_middleware)
-      }
-    }
-  }
-}
-
-/// Extracts middleware from a piped route expression. Separates
-/// the base route definition from any middleware applied via
-/// |> route.middleware().
-///
-fn extract_piped_middleware(item: String) -> #(String, List(String)) {
-  case string.split_once(item, "|> route.middleware(") {
-    Ok(#(base, middleware_part)) -> {
-      let middleware = extract_middleware_list(middleware_part)
-      #(string.trim(base), middleware)
-    }
-    Error(_) -> #(item, [])
-  }
-}
-
-/// Extracts middleware function names from a list expression.
-/// Parses the array content and splits by comma to get
-/// individual middleware names.
-///
-fn extract_middleware_list(content: String) -> List(String) {
-  case string.split_once(content, "[") {
-    Ok(#(_, after_bracket)) -> {
-      let list_content = find_matching_bracket(after_bracket, 1, "")
-      list_content
-      |> string.split(",")
-      |> list.map(string.trim)
-      |> list.filter(fn(s) { s != "" })
-    }
-    Error(_) -> []
-  }
-}
-
-/// Parses a route group (prefix or middleware). Extracts the
-/// group configuration and recursively parses nested routes
-/// with updated stacks.
-///
-fn parse_group(
-  item: String,
-  prefix_stack: List(String),
-  middleware_stack: List(List(String)),
-  group_middleware: List(String),
-) -> List(ParsedRoute) {
-  case string.starts_with(item, "route.prefix(") {
-    True -> {
-      let after = string.drop_start(item, 13)
-      case extract_string_arg(after) {
-        Ok(#(prefix, rest)) -> {
-          let inner = extract_inner_routes(rest)
-          let new_prefix_stack = list.append(prefix_stack, [prefix])
-          let new_middleware_stack =
-            list.append(middleware_stack, [group_middleware])
-          parse_route_list(inner, new_prefix_stack, new_middleware_stack)
-        }
-        Error(_) -> []
-      }
-    }
-    False -> {
-      // route.group_middleware([middleware], [routes])
-      let after = string.drop_start(item, 23)
-      let #(inline_middleware, rest) = extract_group_middleware_list(after)
-      let all_group_middleware =
-        list.append(group_middleware, inline_middleware)
-      let inner = extract_inner_routes(rest)
-      let new_middleware_stack =
-        list.append(middleware_stack, [all_group_middleware])
-      parse_route_list(inner, prefix_stack, new_middleware_stack)
-    }
-  }
-}
-
-/// Extracts middleware list from group_middleware call.
-/// Returns the list of middleware names and remaining content
-/// for further parsing.
-///
-fn extract_group_middleware_list(content: String) -> #(List(String), String) {
-  let content = string.trim_start(content)
-  case string.starts_with(content, "[") {
-    True -> {
-      let after_bracket = string.drop_start(content, 1)
-      let list_content = find_matching_bracket(after_bracket, 1, "")
-      let middleware =
-        list_content
-        |> string.split(",")
-        |> list.map(string.trim)
-        |> list.filter(fn(s) { s != "" })
-      // Find rest after the closing bracket
-      let rest_start = string.length(list_content) + 2
-      let rest = string.drop_start(content, rest_start)
-      #(middleware, rest)
-    }
-    False -> #([], content)
-  }
-}
-
-/// Extracts the inner routes array from a group. Finds the
-/// opening bracket and extracts content to its matching
-/// close.
-///
-fn extract_inner_routes(content: String) -> String {
-  case string.split_once(content, "[") {
-    Ok(#(_, after)) -> find_matching_bracket(after, 1, "")
-    Error(_) -> ""
-  }
-}
-
-/// Parses a regular route definition. Extracts method, path,
-/// and handler, applying prefix stack and middleware from
-/// parent groups.
-///
-fn parse_route(
-  item: String,
-  prefix_stack: List(String),
-  middleware: List(String),
-) -> List(ParsedRoute) {
-  case string.starts_with(item, "route.redirect") {
-    True -> parse_redirect(item, prefix_stack)
-    False -> {
-      case extract_method(item) {
-        Ok(method) -> {
-          let after_method =
-            string.drop_start(item, string.length("route." <> method <> "("))
-          case extract_string_arg(after_method) {
-            Ok(#(path, rest)) -> {
-              case extract_handler(rest) {
-                Ok(handler) -> {
-                  let full_path = build_full_path(prefix_stack, path)
-                  [ParsedRoute(method:, path: full_path, handler:, middleware:)]
-                }
-                Error(_) -> []
-              }
-            }
-            Error(_) -> []
-          }
-        }
-        Error(_) -> []
-      }
-    }
-  }
-}
-
-/// Parses a redirect route definition. Extracts from/to paths
-/// and determines status code (308 for permanent, 303 for
-/// temporary).
-///
-fn parse_redirect(item: String, prefix_stack: List(String)) -> List(ParsedRoute) {
-  let is_permanent = string.contains(item, "redirect_permanent")
-  let status = case is_permanent {
-    True -> 308
-    False -> 303
-  }
-
-  let start_len = case is_permanent {
-    True -> string.length("route.redirect_permanent(")
-    False -> string.length("route.redirect(")
-  }
-
-  let after = string.drop_start(item, start_len)
-
-  case extract_string_arg(after) {
-    Ok(#(from, rest)) -> {
-      case extract_string_arg(string.trim_start(rest)) {
-        Ok(#(to, _)) -> {
-          let full_from = build_full_path(prefix_stack, from)
-          [ParsedRedirect(from: full_from, to:, status:)]
-        }
-        Error(_) -> []
-      }
-    }
-    Error(_) -> []
-  }
-}
-
-/// Extracts the HTTP method from a route call. Checks for
-/// supported methods (get, post, put, patch, delete, head,
-/// options).
-///
-fn extract_method(item: String) -> Result(String, Nil) {
-  let methods = ["get", "post", "put", "patch", "delete", "head", "options"]
-
-  list.find_map(methods, fn(method) {
-    case string.starts_with(item, "route." <> method <> "(") {
-      True -> Ok(method)
-      False -> Error(Nil)
-    }
-  })
-}
-
-/// Extracts a string argument from function call syntax.
-/// Parses quoted strings and returns the content with
-/// remaining text.
-///
-fn extract_string_arg(content: String) -> Result(#(String, String), Nil) {
-  let content = string.trim_start(content)
-
-  case string.starts_with(content, "\"") {
-    True -> {
-      let after_quote = string.drop_start(content, 1)
-      case string.split_once(after_quote, "\"") {
-        Ok(#(str_content, rest)) -> {
-          let rest = string.trim_start(rest)
-          let rest = case string.starts_with(rest, ",") {
-            True -> string.drop_start(rest, 1)
-            False -> rest
-          }
-          Ok(#(str_content, rest))
-        }
-        Error(_) -> Error(Nil)
-      }
-    }
-    False -> Error(Nil)
-  }
-}
-
-/// Extracts the handler from a route definition. Handles both
-/// named function references and anonymous function
-/// definitions.
-///
-fn extract_handler(content: String) -> Result(String, Nil) {
-  let content = string.trim(content)
-
-  case string.starts_with(content, "fn") {
-    True -> extract_anonymous_function(content)
-    False -> {
-      let handler =
-        content
-        |> string.split(")")
-        |> list.first
-        |> result.unwrap("")
-        |> string.trim
-
-      case handler {
-        "" -> Error(Nil)
-        h -> Ok(h)
-      }
-    }
-  }
-}
-
-/// Extracts an anonymous function definition. Uses balanced
-/// brace tracking to find the complete function body
-/// including nested blocks.
-///
-fn extract_anonymous_function(content: String) -> Result(String, Nil) {
-  let #(fn_text, _) = extract_fn_balanced(content, 0, 0, "", False)
-  case fn_text {
-    "" -> Error(Nil)
-    text -> Ok(text)
-  }
-}
-
-/// Extracts a balanced function definition tracking braces
-/// and parentheses. Returns when the function body's closing
-/// brace is found.
-///
-fn extract_fn_balanced(
-  content: String,
-  parens: Int,
-  braces: Int,
-  acc: String,
-  in_body: Bool,
-) -> #(String, String) {
-  case string.pop_grapheme(content) {
-    Ok(#("{", rest)) -> {
-      extract_fn_balanced(rest, parens, braces + 1, acc <> "{", True)
-    }
-    Ok(#("}", rest)) -> {
-      let new_braces = braces - 1
-      case new_braces == 0 && in_body {
-        True -> #(acc <> "}", rest)
-        False ->
-          extract_fn_balanced(rest, parens, new_braces, acc <> "}", in_body)
-      }
-    }
-    Ok(#("(", rest)) ->
-      extract_fn_balanced(rest, parens + 1, braces, acc <> "(", in_body)
-    Ok(#(")", rest)) ->
-      extract_fn_balanced(rest, parens - 1, braces, acc <> ")", in_body)
-    Ok(#(char, rest)) ->
-      extract_fn_balanced(rest, parens, braces, acc <> char, in_body)
-    Error(_) -> #(acc, "")
-  }
-}
-
-/// Builds the full path by joining prefix stack with the route
-/// path. Handles slash normalization to produce clean URL
-/// paths.
-///
-fn build_full_path(prefix_stack: List(String), path: String) -> String {
-  let prefix =
-    prefix_stack
-    |> list.map(fn(p) { string.trim(p) |> trim_slashes })
-    |> list.filter(fn(p) { p != "" })
-    |> string.join("/")
-
-  let path_clean = trim_slashes(path)
-
-  case prefix, path_clean {
-    "", "" -> "/"
-    "", p -> "/" <> p
-    pref, "" -> "/" <> pref
-    pref, p -> "/" <> pref <> "/" <> p
-  }
-}
-
-/// Removes leading and trailing slashes from a string. Used
-/// for normalizing path segments before joining them
-/// together.
-///
-fn trim_slashes(s: String) -> String {
-  s
-  |> trim_start_char("/")
-  |> trim_end_char("/")
-}
-
-/// Recursively removes a character from the start of a string.
-/// Continues until the string no longer starts with the
-/// given character.
-///
-fn trim_start_char(s: String, char: String) -> String {
-  case string.starts_with(s, char) {
-    True -> trim_start_char(string.drop_start(s, 1), char)
-    False -> s
-  }
-}
-
-/// Recursively removes a character from the end of a string.
-/// Continues until the string no longer ends with the
-/// given character.
-///
-fn trim_end_char(s: String, char: String) -> String {
-  case string.ends_with(s, char) {
-    True -> trim_end_char(string.drop_end(s, 1), char)
-    False -> s
-  }
 }
 
 /// Generates the dispatch code from parsed routes. Groups
@@ -805,17 +1103,22 @@ fn compare_paths(a: String, b: String) -> order.Order {
 fn group_routes_by_path(
   routes: List(ParsedRoute),
 ) -> Dict(String, List(ParsedRoute)) {
-  list.fold(routes, dict.new(), fn(acc, route) {
-    let path = case route {
-      ParsedRoute(path:, ..) -> path
-      ParsedRedirect(from:, ..) -> from
-    }
+  // Accumulate with prepending for O(1) insertion
+  let grouped =
+    list.fold(routes, dict.new(), fn(acc, route) {
+      let path = case route {
+        ParsedRoute(path:, ..) -> path
+        ParsedRedirect(from:, ..) -> from
+      }
 
-    case dict.get(acc, path) {
-      Ok(existing) -> dict.insert(acc, path, list.append(existing, [route]))
-      Error(_) -> dict.insert(acc, path, [route])
-    }
-  })
+      case dict.get(acc, path) {
+        Ok(existing) -> dict.insert(acc, path, [route, ..existing])
+        Error(_) -> dict.insert(acc, path, [route])
+      }
+    })
+
+  // Reverse each group to restore original order
+  dict.map_values(grouped, fn(_, routes) { list.reverse(routes) })
 }
 
 /// Generates a single path case clause. Creates the pattern
@@ -863,22 +1166,20 @@ fn path_to_segments(path: String) -> List(String) {
   |> list.filter(fn(s) { s != "" })
 }
 
-/// Checks if a path segment is a parameter. Parameters are
-/// wrapped in curly braces like {id} or {user_id} in route
-/// definitions.
+/// Checks if a path segment is a parameter. Parameters start
+/// with colon like :id or :user_id in route definitions.
+/// Returns True for parameters, False for static segments.
 ///
 fn is_param_segment(segment: String) -> Bool {
-  string.starts_with(segment, "{") && string.ends_with(segment, "}")
+  string.starts_with(segment, ":")
 }
 
 /// Extracts the parameter name from a segment. Removes the
-/// surrounding curly braces to get the variable name for
-/// binding.
+/// leading colon to get the variable name for binding in
+/// the generated pattern match expression.
 ///
 fn extract_param_name(segment: String) -> String {
-  segment
-  |> string.drop_start(1)
-  |> string.drop_end(1)
+  string.drop_start(segment, 1)
 }
 
 /// Generates method dispatch for a path's routes. Handles
@@ -900,18 +1201,31 @@ fn generate_method_cases(routes: List(ParsedRoute)) -> String {
       let method_routes =
         list.filter_map(routes, fn(r) {
           case r {
-            ParsedRoute(method:, path:, handler:, middleware:) ->
-              Ok(#(method, path, handler, middleware))
+            ParsedRoute(
+              method:,
+              path:,
+              handler:,
+              middleware:,
+              validator:,
+              params:,
+            ) -> Ok(#(method, path, handler, middleware, validator, params))
             ParsedRedirect(..) -> Error(Nil)
           }
         })
 
       case method_routes {
         [] -> "      wisp.not_found()"
-        [#(method, path, handler, middleware)] -> {
+        [#(method, path, handler, middleware, validator, fn_params)] -> {
           let method_upper = string.capitalise(method)
-          let params = extract_params_from_path(path)
-          let handler_call = generate_handler_call(handler, params, middleware)
+          let route_params = extract_params_from_path(path)
+          let handler_call =
+            generate_handler_call(
+              handler,
+              route_params,
+              fn_params,
+              middleware,
+              validator,
+            )
           "      case method {\n        "
           <> method_upper
           <> " -> "
@@ -927,11 +1241,17 @@ fn generate_method_cases(routes: List(ParsedRoute)) -> String {
 
           let cases =
             list.map(method_routes, fn(r) {
-              let #(method, path, handler, middleware) = r
+              let #(method, path, handler, middleware, validator, fn_params) = r
               let method_upper = string.capitalise(method)
-              let params = extract_params_from_path(path)
+              let route_params = extract_params_from_path(path)
               let handler_call =
-                generate_handler_call(handler, params, middleware)
+                generate_handler_call(
+                  handler,
+                  route_params,
+                  fn_params,
+                  middleware,
+                  validator,
+                )
               "        " <> method_upper <> " -> " <> handler_call
             })
             |> string.join("\n")
@@ -958,211 +1278,172 @@ fn extract_params_from_path(path: String) -> List(String) {
 }
 
 /// Generates the handler function call. Handles middleware
-/// wrapping and passes appropriate arguments based on handler
-/// type.
+/// and validator wrapping, passes appropriate arguments based
+/// on handler function signature order.
 ///
 fn generate_handler_call(
   handler: String,
-  params: List(String),
+  route_params: List(String),
+  fn_params: List(FunctionParam),
   middleware: List(String),
+  validator: option.Option(String),
 ) -> String {
-  let call = case string.starts_with(handler, "fn") {
-    True -> generate_anon_fn_call(handler)
-    False -> {
-      let args = ["req", "ctx"] |> list.append(params) |> string.join(", ")
-      handler <> "(" <> args <> ")"
-    }
+  // Build args based on function signature order
+  let args = build_handler_args(fn_params, route_params, validator)
+  let call = handler <> "(" <> string.join(args, ", ") <> ")"
+
+  // Wrap with validator if present
+  let with_validator = case validator {
+    option.Some(v) ->
+      "{\n          use validated <- "
+      <> validator_module_name(v)
+      <> ".validate(req, ctx)\n          "
+      <> call
+      <> "\n        }"
+    option.None -> call
   }
 
+  // Wrap with middleware if present
   case middleware {
-    [] -> call
+    [] -> with_validator
     _ -> {
-      let middleware_list = "[" <> string.join(middleware, ", ") <> "]"
-      let #(use_req, use_ctx) = case string.starts_with(handler, "fn") {
-        True -> {
-          let fn_params = extract_fn_params(handler)
-          case list.length(fn_params) {
-            0 -> #("_req", "_ctx")
-            1 -> #("req", "_ctx")
-            _ -> #("req", "ctx")
-          }
-        }
-        False -> #("req", "ctx")
+      let middleware_calls =
+        middleware
+        |> list.map(middleware_path_to_call)
+        |> string.join(", ")
+      let middleware_list = "[" <> middleware_calls <> "]"
+      // Check if handler or validator uses req/ctx to avoid unused warnings
+      let handler_uses_req = list.any(fn_params, is_request_param)
+      let handler_uses_ctx = list.any(fn_params, is_context_param)
+      let has_validator = option.is_some(validator)
+      let mw_req = case handler_uses_req || has_validator {
+        True -> "req"
+        False -> "_req"
+      }
+      let mw_ctx = case handler_uses_ctx || has_validator {
+        True -> "ctx"
+        False -> "_ctx"
       }
       "{\n          use "
-      <> use_req
+      <> mw_req
       <> ", "
-      <> use_ctx
+      <> mw_ctx
       <> " <- middleware.apply("
       <> middleware_list
       <> ", req, ctx)\n          "
-      <> call
+      <> with_validator
       <> "\n        }"
     }
   }
 }
 
-/// Generates a call to an anonymous function handler. Wraps
-/// the function definition in braces and passes appropriate
-/// arguments. Matches params by name - req/ctx are recognized
-/// specially, everything else is a path param.
+/// Builds handler arguments based on function signature order.
+/// Maps each function param to its corresponding value based on
+/// param's type (Request/Context/Data) or name for route params.
 ///
-fn generate_anon_fn_call(handler: String) -> String {
-  let fn_params = extract_fn_params(handler)
-  let fn_param_names = list.map(fn_params, extract_param_name_from_signature)
-
-  let args =
-    fn_param_names
-    |> list.map(fn(name) {
-      case name {
-        "req" | "_req" -> "req"
-        "ctx" | "_ctx" -> "ctx"
-        _ -> name
-      }
-    })
-    |> string.join(", ")
-
-  "{ " <> handler <> " }(" <> args <> ")"
+fn build_handler_args(
+  fn_params: List(FunctionParam),
+  route_params: List(String),
+  validator: option.Option(String),
+) -> List(String) {
+  list.map(fn_params, fn(param) { param_to_arg(param, route_params, validator) })
 }
 
-/// Extracts the parameter name from a signature string.
-/// Handles both typed params like "id: String" and untyped
-/// params like "id".
+/// Converts a function parameter to its corresponding argument.
+/// Uses type matching for Request/Context/Data params, and
+/// name matching for route path parameters.
 ///
-fn extract_param_name_from_signature(param: String) -> String {
-  let trimmed = string.trim(param)
-  case string.split_once(trimmed, ":") {
-    Ok(#(name, _)) -> string.trim(name)
-    Error(_) -> trimmed
-  }
-}
-
-/// Extracts parameter names from an anonymous function.
-/// Parses the function signature to determine how many
-/// arguments it expects.
-///
-fn extract_fn_params(handler: String) -> List(String) {
-  case string.split_once(handler, "(") {
-    Ok(#(_, rest)) -> {
-      case string.split_once(rest, ")") {
-        Ok(#(params_str, _)) -> {
-          let params_str = string.trim(params_str)
-          case params_str {
-            "" -> []
-            _ ->
-              params_str
-              |> string.split(",")
-              |> list.map(string.trim)
-              |> list.filter(fn(s) { s != "" })
+fn param_to_arg(
+  param: FunctionParam,
+  _route_params: List(String),
+  validator: option.Option(String),
+) -> String {
+  case is_request_param(param), is_context_param(param) {
+    True, _ -> "req"
+    _, True -> "ctx"
+    False, False ->
+      case is_validator_data_param(param, validator) {
+        True -> "validated"
+        False ->
+          case string.starts_with(param.name, "_") {
+            True -> string.drop_start(param.name, 1)
+            False -> param.name
           }
-        }
-        Error(_) -> []
       }
-    }
-    Error(_) -> []
   }
 }
 
-/// Writes the compiled route file to disk. Assembles imports,
-/// dispatch code, and function wrapper, then validates with
-/// gleam check before formatting.
+/// Checks if a param is the Request type. Identifies handler
+/// params that should receive the request object.
+/// Matches type names: Request, wisp.Request.
 ///
-pub fn write_compiled_file(
-  compile_result: CompileResult,
-  dest_path: String,
-) -> Result(Nil, String) {
-  let imports_str = string.join(compile_result.imports, "\n")
+fn is_request_param(param: FunctionParam) -> Bool {
+  param.param_type == "Request" || param.param_type == "wisp.Request"
+}
 
-  let has_routes = compile_result.used_methods != []
+/// Checks if a param is the Context type. Identifies handler
+/// params that should receive the application context.
+/// Matches type names: Context, ctx.Context.
+///
+fn is_context_param(param: FunctionParam) -> Bool {
+  param.param_type == "Context" || param.param_type == "ctx.Context"
+}
 
-  let http_import = case compile_result.used_methods {
-    [] -> ""
-    methods -> "\nimport gleam/http.{" <> string.join(methods, ", ") <> "}"
-  }
-
-  let middleware_import = case compile_result.uses_middleware {
-    True -> "\nimport glimr/http/middleware"
-    False -> ""
-  }
-
-  let fn_args = case has_routes {
-    True -> "path, method, req, ctx"
-    False -> "path, _method, _req, _ctx"
-  }
-
-  let generated_comment =
-    "// This file was generated by Glimr ✨
-// https://github.com/glimr-org/glimr?tab=readme-ov-file#routes
-//
-// Do not edit this file. If you would like to use plain pattern
-// matching over this compiled route approach, take a look at
-// the docs link below detailing how to do so.
-//
-// See: https://github.com/glimr-org/glimr?tab=readme-ov-file#direct-pattern-matching
-
-"
-
-  let content =
-    generated_comment
-    <> imports_str
-    <> http_import
-    <> middleware_import
-    <> "\nimport wisp"
-    <> "\n\npub fn routes("
-    <> fn_args
-    <> ") {\n"
-    <> compile_result.routes_code
-    <> "\n}\n"
-
-  let previous_content = simplifile.read(dest_path) |> result.unwrap("")
-
-  case simplifile.write(dest_path, content) {
-    Ok(_) -> {
-      // Check BEFORE formatting so line numbers match our mapping
-      case shellout.command("gleam", ["check"], in: ".", opt: []) {
-        Ok(_) -> {
-          let _ =
-            shellout.command("gleam", ["format", dest_path], in: ".", opt: [])
-          Ok(Nil)
-        }
-        Error(#(_, msg)) -> {
-          case string.contains(msg, dest_path) {
-            True -> {
-              let _ = simplifile.write(dest_path, previous_content)
-              let route_path =
-                find_route_from_error(
-                  msg,
-                  dest_path,
-                  compile_result.line_to_route,
-                )
-              let route_hint = case route_path {
-                Ok(path) -> " (route: " <> path <> ")"
-                Error(_) -> ""
-              }
-              let specific_hint = get_specific_error_hint(msg)
-              Error(
-                "Failed to compile "
-                <> dest_path
-                <> route_hint
-                <> "\n"
-                <> specific_hint,
-              )
-            }
-            False -> {
-              let _ =
-                shellout.command(
-                  "gleam",
-                  ["format", dest_path],
-                  in: ".",
-                  opt: [],
-                )
-              Ok(Nil)
-            }
-          }
-        }
-      }
+/// Checks if a param is the validator Data type. Identifies
+/// handler params that receive validated form data.
+/// Matches type names: Data, {validator_name}.Data.
+///
+fn is_validator_data_param(
+  param: FunctionParam,
+  validator: option.Option(String),
+) -> Bool {
+  case validator {
+    option.Some(v) -> {
+      let validator_name = validator_module_name(v)
+      param.param_type == "Data"
+      || param.param_type == validator_name <> ".Data"
     }
-    Error(_) -> Error("Failed to write file: " <> dest_path)
+    option.None -> False
+  }
+}
+
+/// Converts a middleware module path to a function call.
+/// Extracts the module alias from the path and appends .run
+/// to create the callable reference for middleware.apply.
+///
+fn middleware_path_to_call(path: String) -> String {
+  last_segment(path) <> ".run"
+}
+
+/// Removes leading and trailing slashes from a string. Used
+/// for normalizing path segments before joining them
+/// together.
+///
+fn trim_slashes(s: String) -> String {
+  s
+  |> trim_start_char("/")
+  |> trim_end_char("/")
+}
+
+/// Recursively removes a character from the start of a string.
+/// Continues until the string no longer starts with the
+/// given character.
+///
+fn trim_start_char(s: String, char: String) -> String {
+  case string.starts_with(s, char) {
+    True -> trim_start_char(string.drop_start(s, 1), char)
+    False -> s
+  }
+}
+
+/// Recursively removes a character from the end of a string.
+/// Continues until the string no longer ends with the
+/// given character.
+///
+fn trim_end_char(s: String, char: String) -> String {
+  case string.ends_with(s, char) {
+    True -> trim_end_char(string.drop_end(s, 1), char)
+    False -> s
   }
 }
 
@@ -1187,7 +1468,7 @@ fn extract_line_number_for_file(
   msg: String,
   file_path: String,
 ) -> Result(Int, Nil) {
-  // Error format is like "src/bootstrap/gen/routes/api.gleam:12:7"
+  // Error format is like "src/compiled/routes/api.gleam:12:7"
   // We need to find the specific file, not just any .gleam file
   case string.split_once(msg, file_path <> ":") {
     Ok(#(_, after)) -> {
@@ -1212,8 +1493,15 @@ fn get_specific_error_hint(msg: String) -> String {
   let is_not_function = string.contains(msg, "not a function")
   let is_wrong_return =
     string.contains(msg, "Response") && string.contains(msg, "Type mismatch")
+  let is_validated_type_mismatch =
+    string.contains(msg, "Type mismatch")
+    && string.contains(msg, "validated")
+    && !is_wrong_return
 
   case Nil {
+    _ if is_validated_type_mismatch ->
+      "Type mismatch with validated data.\n"
+      <> "Ensure your Data type is imported from the validator module."
     _ if is_arity_error ->
       "Handler function has incorrect number of parameters.\n"
       <> "Expected signature: fn(req, ctx) or fn(req, ctx, ...path_params)"
@@ -1222,10 +1510,10 @@ fn get_specific_error_hint(msg: String) -> String {
       <> "Make sure your handler returns a Response type."
     _ if is_unknown_var ->
       "Handler function not found.\n"
-      <> "Make sure the module is imported and the function exists."
+      <> "Make sure the function exists in the controller."
     _ if is_unknown_module ->
-      "Handler module not found.\n"
-      <> "Make sure the module is imported in your routes file."
+      "Controller module not found.\n"
+      <> "Make sure the controller file exists."
     _ if is_not_function ->
       "Handler is not a function.\n"
       <> "Make sure you're referencing a function, not a value."

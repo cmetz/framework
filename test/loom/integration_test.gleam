@@ -7,9 +7,7 @@ import glimr/loom/lexer
 import glimr/loom/parser
 import glimr/loom/runtime
 
-// =============================================================================
-// Runtime Function Tests
-// =============================================================================
+// ------------------------------------------------------------- Runtime Function Tests
 
 pub fn runtime_string_concat_test() {
   { "" <> "Hello" <> ", " <> "World!" }
@@ -57,9 +55,7 @@ pub fn runtime_escape_preserves_normal_text_test() {
   |> should.equal("Hello, World!")
 }
 
-// =============================================================================
-// Full Pipeline Tests (Tokenize -> Parse -> Verify Structure)
-// =============================================================================
+// ------------------------------------------------------------- Full Pipeline Tests
 
 pub fn pipeline_simple_text_test() {
   let template = "Hello, World!"
@@ -78,7 +74,7 @@ pub fn pipeline_variable_interpolation_test() {
   parsed.nodes
   |> should.equal([
     parser.TextNode("Hello, "),
-    parser.VariableNode("name"),
+    parser.VariableNode("name", 1),
     parser.TextNode("!"),
   ])
 }
@@ -91,11 +87,90 @@ pub fn pipeline_conditional_test() {
   parsed.nodes
   |> should.equal([
     parser.IfNode([
-      #(Some("show"), [
+      #(Some("show"), 1, [
         parser.ElementNode("span", [], [parser.TextNode("visible")]),
       ]),
     ]),
   ])
+}
+
+pub fn l_for_and_l_if_on_same_element_test() {
+  // l-for should introduce loop variables before l-if is evaluated
+  let template =
+    "@props(items: List(Item))\n<span l-for=\"item in items, loop\" l-if=\"item.active\">{{ item.name }}</span>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Validation should pass - item is in scope from l-for
+  generator.validate_template(parsed, "test.loom.html")
+  |> should.be_ok
+}
+
+pub fn nested_elements_same_tag_parses_correctly_test() {
+  // Verify nested same-tag elements with dynamic outer work correctly
+  let template = "<div l-if=\"show\"><div>inner</div></div>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should have an IfNode containing an ElementNode with nested content
+  case parsed.nodes {
+    [
+      parser.IfNode([
+        #(Some("show"), _, [parser.ElementNode("div", [], children)]),
+      ]),
+    ] -> {
+      // Children should include the inner div as text (plain HTML)
+      case children {
+        [parser.TextNode(text)] -> {
+          // The inner div should be preserved as text
+          text
+          |> string.contains("<div>inner</div>")
+          |> should.be_true
+        }
+        _ -> should.fail()
+      }
+    }
+    _ -> should.fail()
+  }
+}
+
+pub fn nested_elements_same_tag_in_loop_test() {
+  // Nested elements of the same type should not confuse the parser
+  let template =
+    "@props(items: List(Item))
+<span l-for=\"item in items\">
+  <span>{{ item.name }}</span>
+  <span>{{ item.job }}</span>
+</span>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Validation should pass - item is in scope for all nested spans
+  generator.validate_template(parsed, "test.loom.html")
+  |> should.be_ok
+}
+
+pub fn template_element_is_phantom_wrapper_test() {
+  // <template> should NOT output its own tags, only its children
+  let template = "<template l-if=\"show\"><p>content</p></template>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+
+  // Should NOT contain <template> tags in output
+  generated.code
+  |> string.contains("<template")
+  |> should.be_false
+
+  generated.code
+  |> string.contains("</template>")
+  |> should.be_false
+
+  // Should contain the inner content
+  generated.code
+  |> string.contains("<p")
+  |> should.be_true
 }
 
 pub fn pipeline_loop_test() {
@@ -105,9 +180,15 @@ pub fn pipeline_loop_test() {
 
   parsed.nodes
   |> should.equal([
-    parser.EachNode("items", ["item"], None, [
-      parser.ElementNode("span", [], [parser.VariableNode("item")]),
-    ]),
+    parser.EachNode(
+      "items",
+      ["item"],
+      None,
+      [
+        parser.ElementNode("span", [], [parser.VariableNode("item", 1)]),
+      ],
+      1,
+    ),
   ])
 }
 
@@ -147,9 +228,7 @@ pub fn pipeline_self_closing_component_test() {
   }
 }
 
-// =============================================================================
-// Full Template Compilation Tests
-// =============================================================================
+// ------------------------------------------------------------- Full Template Compilation Tests
 
 pub fn compile_page_template_test() {
   // With new architecture, templates use explicit data. prefixes
@@ -162,7 +241,7 @@ pub fn compile_page_template_test() {
   let assert Ok(tokens) = lexer.tokenize(template)
   let assert Ok(parsed) = parser.parse(tokens)
   let generated =
-    generator.generate(parsed, "home", False, None, dict.new(), dict.new())
+    generator.generate(parsed, "home", False, dict.new(), dict.new())
 
   // Should pass through data.title, etc.
   generated.code
@@ -190,7 +269,7 @@ pub fn compile_component_template_test() {
   let assert Ok(tokens) = lexer.tokenize(template)
   let assert Ok(parsed) = parser.parse(tokens)
   let generated =
-    generator.generate(parsed, "alert", True, None, dict.new(), dict.new())
+    generator.generate(parsed, "alert", True, dict.new(), dict.new())
 
   // Should have html function with slot and attributes params (no view file = no data params)
   generated.code
@@ -203,11 +282,11 @@ pub fn compile_component_template_test() {
 
   // Should access variables directly
   generated.code
-  |> string.contains("runtime.escape(type)")
+  |> string.contains("runtime.display(type)")
   |> should.be_true
 
   generated.code
-  |> string.contains("_ if dismissible ->")
+  |> string.contains("case dismissible {")
   |> should.be_true
 
   // Should use slot argument directly
@@ -233,7 +312,7 @@ pub fn compile_layout_template_test() {
   let assert Ok(tokens) = lexer.tokenize(template)
   let assert Ok(parsed) = parser.parse(tokens)
   let generated =
-    generator.generate(parsed, "app", False, None, dict.new(), dict.new())
+    generator.generate(parsed, "app", False, dict.new(), dict.new())
 
   // Should have html function with slot param (no view file = no data params)
   generated.code
@@ -258,7 +337,7 @@ pub fn compile_template_with_nested_components_test() {
   let assert Ok(tokens) = lexer.tokenize(template)
   let assert Ok(parsed) = parser.parse(tokens)
   let generated =
-    generator.generate(parsed, "page", False, None, dict.new(), dict.new())
+    generator.generate(parsed, "page", False, dict.new(), dict.new())
 
   // Should import all components
   generated.code
@@ -281,14 +360,7 @@ pub fn compile_template_with_each_and_component_test() {
   let assert Ok(tokens) = lexer.tokenize(template)
   let assert Ok(parsed) = parser.parse(tokens)
   let generated =
-    generator.generate(
-      parsed,
-      "alerts_page",
-      False,
-      None,
-      dict.new(),
-      dict.new(),
-    )
+    generator.generate(parsed, "alerts_page", False, dict.new(), dict.new())
 
   // Should pass through data.alerts
   generated.code
@@ -301,9 +373,7 @@ pub fn compile_template_with_each_and_component_test() {
   |> should.be_true
 }
 
-// =============================================================================
-// Edge Case Tests
-// =============================================================================
+// ------------------------------------------------------------- Edge Case Tests
 
 pub fn pipeline_multiple_at_signs_test() {
   // Make sure @ not followed by directive is treated as text
@@ -339,7 +409,7 @@ pub fn pipeline_nested_structure_test() {
 
   // Should parse without error - structure validation
   case parsed.nodes {
-    [parser.IfNode([#(Some("a"), _), ..])] -> Nil
+    [parser.IfNode([#(Some("a"), _, _), ..])] -> Nil
     _ -> panic as "Expected outer if node with condition 'a'"
   }
 }
@@ -349,7 +419,7 @@ pub fn pipeline_raw_html_not_escaped_test() {
   let assert Ok(tokens) = lexer.tokenize(template)
   let assert Ok(parsed) = parser.parse(tokens)
   let generated =
-    generator.generate(parsed, "raw", False, None, dict.new(), dict.new())
+    generator.generate(parsed, "raw", False, dict.new(), dict.new())
 
   // Raw variable should not call escape
   generated.code
@@ -361,9 +431,7 @@ pub fn pipeline_raw_html_not_escaped_test() {
   |> should.be_false
 }
 
-// =============================================================================
-// Error Propagation Tests
-// =============================================================================
+// ------------------------------------------------------------- Error Propagation Tests
 
 pub fn error_lexer_propagates_test() {
   let template = "{{ unclosed"
@@ -402,9 +470,7 @@ pub fn error_mismatched_component_test() {
   |> should.be_error
 }
 
-// =============================================================================
-// Attribute Forwarding Tests
-// =============================================================================
+// ------------------------------------------------------------- Attribute Forwarding Tests
 
 pub fn runtime_render_attributes_test() {
   let attrs = [
@@ -513,7 +579,7 @@ pub fn compile_component_with_attributes_test() {
   let assert Ok(tokens) = lexer.tokenize(template)
   let assert Ok(parsed) = parser.parse(tokens)
   let generated =
-    generator.generate(parsed, "button", True, None, dict.new(), dict.new())
+    generator.generate(parsed, "button", True, dict.new(), dict.new())
 
   // Should have html function with attributes param
   generated.code
@@ -534,7 +600,7 @@ pub fn compile_component_auto_inject_attributes_test() {
   let assert Ok(tokens) = lexer.tokenize(template)
   let assert Ok(parsed) = parser.parse(tokens)
   let generated =
-    generator.generate(parsed, "button", True, None, dict.new(), dict.new())
+    generator.generate(parsed, "button", True, dict.new(), dict.new())
 
   // Should auto-inject merge_attributes with base class
   generated.code
@@ -552,7 +618,7 @@ pub fn compile_using_component_with_attributes_test() {
   let assert Ok(tokens) = lexer.tokenize(template)
   let assert Ok(parsed) = parser.parse(tokens)
   let generated =
-    generator.generate(parsed, "page", False, None, dict.new(), dict.new())
+    generator.generate(parsed, "page", False, dict.new(), dict.new())
 
   // Should generate attributes list with all attributes
   generated.code
@@ -564,9 +630,7 @@ pub fn compile_using_component_with_attributes_test() {
   |> should.be_true
 }
 
-// =============================================================================
-// Attribute Merging End-to-End Tests
-// =============================================================================
+// ------------------------------------------------------------- Attribute Merging End-to-End Tests
 
 pub fn merge_class_attributes_at_runtime_test() {
   // Test that class attributes get merged correctly at runtime
@@ -614,5 +678,449 @@ pub fn merge_mixed_attributes_at_runtime_test() {
       data_attr |> should.equal(runtime.Attribute("data-testid", "button"))
     }
     _ -> panic as "Expected 4 attributes"
+  }
+}
+
+// ------------------------------------------------------------- Line Number Tracking Tests
+
+pub fn pipeline_tracks_variable_line_numbers_test() {
+  // Multi-line template with variables at different lines
+  let template =
+    "line 1
+{{ first_var }}
+line 3
+line 4
+{{ second_var }}"
+
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Verify the parsed nodes have correct line numbers
+  case parsed.nodes {
+    [
+      parser.TextNode("line 1\n"),
+      parser.VariableNode("first_var", line1),
+      parser.TextNode("\nline 3\nline 4\n"),
+      parser.VariableNode("second_var", line2),
+    ] -> {
+      line1 |> should.equal(2)
+      line2 |> should.equal(5)
+    }
+    _ -> panic as "Unexpected node structure"
+  }
+}
+
+pub fn pipeline_tracks_lm_if_line_numbers_test() {
+  // Template with l-if at a specific line (using span which gets parsed as Element)
+  let template =
+    "line 1
+line 2
+<span l-if=\"show\">conditional</span>"
+
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Find the IfNode and verify its line number
+  case parsed.nodes {
+    [parser.TextNode(_), parser.IfNode([#(Some("show"), line, _)])] -> {
+      line |> should.equal(3)
+    }
+    _ -> panic as "Expected TextNode followed by IfNode"
+  }
+}
+
+pub fn pipeline_tracks_lm_for_line_numbers_test() {
+  // Template with l-for at a specific line
+  let template =
+    "line 1
+line 2
+<li l-for=\"item in items\">{{ item }}</li>"
+
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Find the EachNode and verify its line number
+  case parsed.nodes {
+    [parser.TextNode(_), parser.EachNode("items", ["item"], None, _, line)] -> {
+      line |> should.equal(3)
+    }
+    _ -> panic as "Expected TextNode followed by EachNode"
+  }
+}
+
+pub fn pipeline_tracks_mixed_line_numbers_test() {
+  // Complex template with variables and directives at various lines
+  let template =
+    "{{ header }}
+<div l-if=\"show_content\">
+  {{ body }}
+  <ul l-for=\"item in items\">
+    {{ item }}
+  </ul>
+</div>"
+
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Verify header variable is on line 1
+  case parsed.nodes {
+    [parser.VariableNode("header", header_line), ..rest] -> {
+      header_line |> should.equal(1)
+
+      // Verify the IfNode condition is on line 2
+      case rest {
+        [
+          parser.TextNode(_),
+          parser.IfNode([#(Some("show_content"), if_line, if_body)]),
+        ] -> {
+          if_line |> should.equal(2)
+
+          // Find the body variable and EachNode inside the if body
+          case if_body {
+            [parser.ElementNode("div", _, div_children)] -> {
+              case div_children {
+                [
+                  parser.TextNode(_),
+                  parser.VariableNode("body", body_line),
+                  parser.TextNode(_),
+                  parser.EachNode("items", ["item"], None, each_body, each_line),
+                  ..
+                ] -> {
+                  body_line |> should.equal(3)
+                  each_line |> should.equal(4)
+
+                  // Verify the item variable inside the loop is on line 5
+                  case each_body {
+                    [parser.ElementNode("ul", _, ul_children)] -> {
+                      case ul_children {
+                        [
+                          parser.TextNode(_),
+                          parser.VariableNode("item", item_line),
+                          ..
+                        ] -> {
+                          item_line |> should.equal(5)
+                        }
+                        _ -> panic as "Expected item variable in ul"
+                      }
+                    }
+                    _ -> panic as "Expected ul element in each body"
+                  }
+                }
+                _ -> panic as "Unexpected div children structure"
+              }
+            }
+            _ -> panic as "Expected ElementNode div in if body"
+          }
+        }
+        _ -> panic as "Expected IfNode after header"
+      }
+    }
+    _ -> panic as "Expected header variable first"
+  }
+}
+
+// ------------------------------------------------------------- Expression Tests
+
+pub fn pipeline_expression_with_function_call_test() {
+  // {{ fn(arg) }} should parse and generate correctly
+  let template = "{{ string.uppercase(name) }}"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as VariableNode with the full expression
+  parsed.nodes
+  |> should.equal([parser.VariableNode("string.uppercase(name)", 1)])
+
+  // Generated code should use runtime.display with the expression
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("runtime.display(string.uppercase(name))")
+  |> should.be_true
+}
+
+pub fn pipeline_raw_expression_with_function_call_test() {
+  // {{{ fn(arg) }}} should parse and generate correctly
+  let template = "{{{ string.uppercase(name) }}}"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as RawVariableNode with the full expression
+  parsed.nodes
+  |> should.equal([parser.RawVariableNode("string.uppercase(name)", 1)])
+
+  // Generated code should output expression directly (no runtime.display)
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("<> string.uppercase(name)")
+  |> should.be_true
+}
+
+pub fn pipeline_expression_with_nested_function_calls_test() {
+  // Nested function calls should work
+  let template = "{{ string.length(string.uppercase(name)) }}"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  parsed.nodes
+  |> should.equal([
+    parser.VariableNode("string.length(string.uppercase(name))", 1),
+  ])
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("runtime.display(string.length(string.uppercase(name)))")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_if_with_function_call_test() {
+  // l-if with function call should parse and generate correctly
+  let template = "<span l-if=\"list.length(items) > 0\">has items</span>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as IfNode with the full expression as condition
+  case parsed.nodes {
+    [parser.IfNode([#(Some("list.length(items) > 0"), _, _)])] -> Nil
+    _ -> panic as "Expected IfNode with function call condition"
+  }
+
+  // Generated code should have case expression with function call
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("case list.length(items) > 0 {")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_else_if_with_function_call_test() {
+  // l-else-if with function call should parse and generate correctly
+  let template =
+    "<span l-if=\"list.is_empty(items)\">empty</span><span l-else-if=\"list.length(items) == 1\">one</span><span l-else>many</span>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as IfNode with multiple branches
+  case parsed.nodes {
+    [
+      parser.IfNode([
+        #(Some("list.is_empty(items)"), _, _),
+        #(Some("list.length(items) == 1"), _, _),
+        #(None, _, _),
+      ]),
+    ] -> Nil
+    _ -> panic as "Expected IfNode with function call conditions"
+  }
+
+  // Generated code should have nested case expressions with function calls
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("case list.is_empty(items) {")
+  |> should.be_true
+  generated.code
+  |> string.contains("case list.length(items) == 1 {")
+  |> should.be_true
+}
+
+pub fn pipeline_expression_with_pipe_operator_test() {
+  // Pipe operator should work in expressions
+  let template = "{{ name |> string.uppercase }}"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  parsed.nodes
+  |> should.equal([parser.VariableNode("name |> string.uppercase", 1)])
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("runtime.display(name |> string.uppercase)")
+  |> should.be_true
+}
+
+pub fn pipeline_expression_with_arithmetic_test() {
+  // Arithmetic expressions should work
+  let template = "{{ count + 1 }}"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  parsed.nodes
+  |> should.equal([parser.VariableNode("count + 1", 1)])
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("runtime.display(count + 1)")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_if_with_boolean_function_test() {
+  // l-if with boolean-returning function should work directly
+  let template = "<div l-if=\"list.is_empty(items)\">No items</div>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("case list.is_empty(items) {")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_if_else_with_expressions_test() {
+  // l-if/l-else with function call expressions
+  let template =
+    "<span l-if=\"list.length(items) > 0\">has items</span><span l-else>empty</span>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as IfNode with two branches (condition + else)
+  case parsed.nodes {
+    [parser.IfNode([#(Some("list.length(items) > 0"), _, _), #(None, _, _)])] ->
+      Nil
+    _ -> panic as "Expected IfNode with if/else branches"
+  }
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains("case list.length(items) > 0 {")
+  |> should.be_true
+  generated.code
+  |> string.contains("True -> {")
+  |> should.be_true
+  generated.code
+  |> string.contains("False -> {")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_if_elseif_else_with_expressions_test() {
+  // l-if/l-else-if/l-else with function call expressions
+  let template =
+    "<span l-if=\"list.is_empty(items)\">none</span><span l-else-if=\"list.length(items) == 1\">one</span><span l-else>many</span>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as IfNode with three branches
+  case parsed.nodes {
+    [
+      parser.IfNode([
+        #(Some("list.is_empty(items)"), _, _),
+        #(Some("list.length(items) == 1"), _, _),
+        #(None, _, _),
+      ]),
+    ] -> Nil
+    _ -> panic as "Expected IfNode with if/else-if/else branches"
+  }
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  // Should have nested case expressions
+  generated.code
+  |> string.contains("case list.is_empty(items) {")
+  |> should.be_true
+  generated.code
+  |> string.contains("case list.length(items) == 1 {")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_if_elseif_elseif_else_with_expressions_test() {
+  // l-if/l-else-if/l-else-if/l-else with function call expressions
+  let template =
+    "<span l-if=\"list.is_empty(items)\">none</span><span l-else-if=\"list.length(items) == 1\">one</span><span l-else-if=\"list.length(items) < 5\">few</span><span l-else>many</span>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should parse as IfNode with four branches
+  case parsed.nodes {
+    [
+      parser.IfNode([
+        #(Some("list.is_empty(items)"), _, _),
+        #(Some("list.length(items) == 1"), _, _),
+        #(Some("list.length(items) < 5"), _, _),
+        #(None, _, _),
+      ]),
+    ] -> Nil
+    _ -> panic as "Expected IfNode with if/else-if/else-if/else branches"
+  }
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  // Should have nested case expressions for each condition
+  generated.code
+  |> string.contains("case list.is_empty(items) {")
+  |> should.be_true
+  generated.code
+  |> string.contains("case list.length(items) == 1 {")
+  |> should.be_true
+  generated.code
+  |> string.contains("case list.length(items) < 5 {")
+  |> should.be_true
+}
+
+pub fn pipeline_lm_if_chain_with_complex_expressions_test() {
+  // Complex expressions with multiple function calls and operators
+  let template =
+    "<div l-if=\"string.length(string.trim(name)) > 0 && list.length(items) > 0\">valid</div><div l-else-if=\"string.is_empty(name) || list.is_empty(items)\">invalid</div><div l-else>partial</div>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  case parsed.nodes {
+    [
+      parser.IfNode([
+        #(
+          Some("string.length(string.trim(name)) > 0 && list.length(items) > 0"),
+          _,
+          _,
+        ),
+        #(Some("string.is_empty(name) || list.is_empty(items)"), _, _),
+        #(None, _, _),
+      ]),
+    ] -> Nil
+    _ -> panic as "Expected IfNode with complex expression conditions"
+  }
+
+  let generated =
+    generator.generate(parsed, "test", False, dict.new(), dict.new())
+  generated.code
+  |> string.contains(
+    "case string.length(string.trim(name)) > 0 && list.length(items) > 0 {",
+  )
+  |> should.be_true
+}
+
+pub fn two_separate_l_if_blocks_both_preserved_test() {
+  // Two independent l-if blocks (not an if/else chain) must produce
+  // two separate IfNodes. The first one must not be silently dropped
+  // when the second l-if starts a new pending chain.
+  let template =
+    "@props(items: List(String))
+<ul l-if=\"items != []\">
+  <li l-for=\"item in items\">{{ item }}</li>
+</ul>
+<p l-if=\"items == []\">No items</p>"
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+
+  // Should produce TWO IfNodes, not one.
+  // Whitespace between them is skipped (pending_if active),
+  // so they appear as adjacent nodes.
+  case parsed.nodes {
+    [parser.IfNode(branches1), parser.IfNode(branches2)] -> {
+      // First IfNode: items != []
+      case branches1 {
+        [#(Some("items != []"), _, _)] -> Nil
+        _ -> panic as "First IfNode should have condition 'items != []'"
+      }
+      // Second IfNode: items == []
+      case branches2 {
+        [#(Some("items == []"), _, _)] -> Nil
+        _ -> panic as "Second IfNode should have condition 'items == []'"
+      }
+    }
+    _ -> panic as "Expected two separate IfNodes"
   }
 }

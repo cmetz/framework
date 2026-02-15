@@ -2,11 +2,13 @@
 ////
 //// Loads and parses the glimr.toml configuration file. Provides
 //// access to hooks that run for commands such as `./glimr build`
-//// and `./glimr run` allowing you to extend them.
+//// and `./glimr run` allowing you to extend them. Also handles
+//// environment variable loading and application port settings.
+////
 
 import dot_env
 import dot_env/env
-import gleam/dict
+import gleam/dict.{type Dict}
 import gleam/list
 import gleam/result
 import simplifile
@@ -19,7 +21,31 @@ import tom
 /// and run lifecycle events.
 ///
 pub type Config {
-  Config(hooks: Hooks)
+  Config(hooks: Hooks, commands: Commands, routes: Routes, loom: Loom)
+}
+
+/// Command configuration for package discovery and auto-
+/// compilation. Lists packages that provide console commands to 
+/// be included in the command registry.
+///
+pub type Commands {
+  Commands(auto_compile: Bool, packages: List(String))
+}
+
+/// Route configuration for auto-compilation during development.
+/// When enabled, routes are recompiled automatically when 
+/// source files change during development mode.
+///
+pub type Routes {
+  Routes(auto_compile: Bool)
+}
+
+/// Loom template configuration for auto-compilation during
+/// development. When enabled, Loom templates are recompiled
+/// automatically when source files change.
+///
+pub type Loom {
+  Loom(auto_compile: Bool)
 }
 
 /// Hook configuration for build and run lifecycle events.
@@ -32,8 +58,6 @@ pub type Hooks {
     build_post: List(String),
     run_pre: List(String),
     run_reload_pre: List(String),
-    run_reload_route_modified: List(String),
-    run_reload_loom_modified: List(String),
     run_reload_post_modified: List(String),
   )
 }
@@ -86,9 +110,9 @@ pub fn dev_proxy_port() -> Int {
 
 // ------------------------------------------------------------- Private Functions
 
-/// Parses TOML content into a Config struct. Extracts the hooks
-/// section and falls back to defaults if parsing fails or
-/// sections are missing.
+/// Parses TOML content into a Config struct. Extracts the hooks,
+/// commands, routes, and loom sections and falls back to defaults
+/// if parsing fails or sections are missing.
 ///
 fn parse(content: String) -> Config {
   case tom.parse(content) {
@@ -97,10 +121,59 @@ fn parse(content: String) -> Config {
         Ok(hooks_toml) -> parse_hooks(hooks_toml)
         Error(_) -> default_hooks()
       }
-      Config(hooks: hooks)
+      let commands = parse_commands(toml)
+      let routes = parse_routes(toml)
+      let loom = parse_loom(toml)
+      Config(hooks: hooks, commands: commands, routes: routes, loom: loom)
     }
     Error(_) -> default_config()
   }
+}
+
+/// Extracts command configuration from the [commands] TOML
+/// section. Parses auto_compile flag and packages list for
+/// console command discovery and registry compilation.
+///
+fn parse_commands(toml: Dict(String, tom.Toml)) -> Commands {
+  let auto_compile = case tom.get_bool(toml, ["commands", "auto_compile"]) {
+    Ok(b) -> b
+    Error(_) -> True
+  }
+  let packages = case tom.get_array(toml, ["commands", "packages"]) {
+    Ok(items) ->
+      list.filter_map(items, fn(item) {
+        case item {
+          tom.String(s) -> Ok(s)
+          _ -> Error(Nil)
+        }
+      })
+    Error(_) -> ["glimr"]
+  }
+  Commands(auto_compile: auto_compile, packages: packages)
+}
+
+/// Extracts route configuration from the [routes] TOML section.
+/// Parses auto_compile flag that controls whether routes are
+/// recompiled automatically during development.
+///
+fn parse_routes(toml: Dict(String, tom.Toml)) -> Routes {
+  let auto_compile = case tom.get_bool(toml, ["routes", "auto_compile"]) {
+    Ok(b) -> b
+    Error(_) -> True
+  }
+  Routes(auto_compile: auto_compile)
+}
+
+/// Extracts loom configuration from the [loom] TOML section.
+/// Parses auto_compile flag that controls whether templates
+/// are recompiled automatically during development.
+///
+fn parse_loom(toml: Dict(String, tom.Toml)) -> Loom {
+  let auto_compile = case tom.get_bool(toml, ["loom", "auto_compile"]) {
+    Ok(b) -> b
+    Error(_) -> True
+  }
+  Loom(auto_compile: auto_compile)
 }
 
 /// Extracts hook configuration from the [hooks] TOML section.
@@ -117,8 +190,6 @@ fn parse_hooks(toml: tom.Toml) -> Hooks {
     build_post: get_string_list(build, "post"),
     run_pre: get_string_list(run, "pre"),
     run_reload_pre: get_string_list(run_reload, "pre"),
-    run_reload_route_modified: get_string_list(run_reload, "route-modified"),
-    run_reload_loom_modified: get_string_list(run_reload, "loom-modified"),
     run_reload_post_modified: get_string_list(run_reload, "post-modified"),
   )
 }
@@ -177,7 +248,36 @@ fn get_string_list(toml: tom.Toml, key: String) -> List(String) {
 /// provide sensible defaults.
 ///
 fn default_config() -> Config {
-  Config(hooks: default_hooks())
+  Config(
+    hooks: default_hooks(),
+    commands: default_commands(),
+    routes: default_routes(),
+    loom: default_loom(),
+  )
+}
+
+/// Returns default commands configuration with glimr as the
+/// only package and auto_compile enabled. This ensures the
+/// framework's built-in commands are always available.
+///
+fn default_commands() -> Commands {
+  Commands(auto_compile: True, packages: ["glimr"])
+}
+
+/// Returns default routes configuration with auto_compile
+/// enabled. Routes will be recompiled on changes during
+/// development unless explicitly disabled.
+///
+fn default_routes() -> Routes {
+  Routes(auto_compile: True)
+}
+
+/// Returns default loom configuration with auto_compile
+/// enabled. Templates will be recompiled on changes during
+/// development unless explicitly disabled.
+///
+fn default_loom() -> Loom {
+  Loom(auto_compile: True)
 }
 
 /// Returns default hooks with all lists empty. No commands
@@ -190,8 +290,6 @@ fn default_hooks() -> Hooks {
     build_post: [],
     run_pre: [],
     run_reload_pre: [],
-    run_reload_route_modified: [],
-    run_reload_loom_modified: [],
     run_reload_post_modified: [],
   )
 }

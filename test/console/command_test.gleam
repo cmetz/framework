@@ -1,6 +1,6 @@
 import gleam/dict
 import gleeunit/should
-import glimr/console/command.{Argument, Command, Flag, ParsedArgs}
+import glimr/console/command.{Args, Argument, Command, Flag}
 
 // ------------------------------------------------------------- Command Creation
 
@@ -49,11 +49,11 @@ pub fn args_sets_argument_list_test() {
   ])
 }
 
-// ------------------------------------------------------------- ParsedArgs Access
+// ------------------------------------------------------------- Args Access
 
 pub fn get_arg_returns_value_when_found_test() {
   let parsed =
-    ParsedArgs(
+    Args(
       arguments: dict.from_list([#("name", "John"), #("age", "25")]),
       flags: [],
       options: dict.new(),
@@ -68,7 +68,7 @@ pub fn get_arg_returns_value_when_found_test() {
 
 pub fn has_flag_returns_true_when_present_test() {
   let parsed =
-    ParsedArgs(
+    Args(
       arguments: dict.from_list([]),
       flags: ["verbose", "force"],
       options: dict.new(),
@@ -83,11 +83,7 @@ pub fn has_flag_returns_true_when_present_test() {
 
 pub fn has_flag_returns_false_when_not_present_test() {
   let parsed =
-    ParsedArgs(
-      arguments: dict.from_list([]),
-      flags: ["verbose"],
-      options: dict.new(),
-    )
+    Args(arguments: dict.from_list([]), flags: ["verbose"], options: dict.new())
 
   command.has_flag(parsed, "quiet")
   |> should.equal(False)
@@ -95,7 +91,7 @@ pub fn has_flag_returns_false_when_not_present_test() {
 
 pub fn has_flag_with_empty_flags_test() {
   let parsed =
-    ParsedArgs(arguments: dict.from_list([]), flags: [], options: dict.new())
+    Args(arguments: dict.from_list([]), flags: [], options: dict.new())
 
   command.has_flag(parsed, "anything")
   |> should.equal(False)
@@ -103,7 +99,7 @@ pub fn has_flag_with_empty_flags_test() {
 
 pub fn get_option_returns_value_when_present_test() {
   let parsed =
-    ParsedArgs(
+    Args(
       arguments: dict.from_list([]),
       flags: [],
       options: dict.from_list([#("database", "analytics"), #("format", "json")]),

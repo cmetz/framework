@@ -1,19 +1,15 @@
 import gleam/string
-import glimr/console/command.{type Command, type ParsedArgs, Argument}
+import glimr/console/command.{type Args, type Command, Argument}
 import glimr/console/console
 import glimr/filesystem/filesystem
-
-/// The name of the console command.
-const name = "make:action"
 
 /// The console command description.
 const description = "Create a new action"
 
-/// Define the Command and it's properties.
+/// Define the Command and its properties.
 ///
 pub fn command() -> Command {
   command.new()
-  |> command.name(name)
   |> command.description(description)
   |> command.args([
     Argument(name: "name", description: "The name of the action"),
@@ -23,7 +19,7 @@ pub fn command() -> Command {
 
 /// Execute the console command.
 ///
-fn run(args: ParsedArgs) -> Nil {
+fn run(args: Args) -> Nil {
   let name = command.get_arg(args, "name")
 
   let module_name = string.lowercase(name)
@@ -47,4 +43,10 @@ fn run(args: ParsedArgs) -> Nil {
       |> console.print()
     }
   }
+}
+
+/// Console command's entry point
+///
+pub fn main() {
+  command.run(command())
 }
