@@ -114,6 +114,26 @@ fn do_tokenize(
   case input {
     "" -> Ok(list.reverse(tokens))
 
+    "\\{{{" <> rest -> {
+      do_tokenize(
+        rest,
+        position + 4,
+        line,
+        append_text(tokens, "{{{"),
+        tag_stack,
+      )
+    }
+
+    "\\{{" <> rest -> {
+      do_tokenize(
+        rest,
+        position + 3,
+        line,
+        append_text(tokens, "{{"),
+        tag_stack,
+      )
+    }
+
     "{{{" <> rest -> {
       parse_variable(
         rest,
@@ -1412,6 +1432,8 @@ fn consume_text(
 fn take_until_special(input: String, accumulated: String) -> #(String, String) {
   case input {
     "" -> #(accumulated, "")
+    "\\{{{" <> _ -> #(accumulated, input)
+    "\\{{" <> _ -> #(accumulated, input)
     "{{{" <> _ -> #(accumulated, input)
     "{{" <> _ -> #(accumulated, input)
     "<!--" <> _ -> #(accumulated, input)

@@ -57,6 +57,45 @@ pub fn tokenize_dotted_variable_test() {
   |> should.equal([Variable("user.name", 1)])
 }
 
+// ------------------------------------------------------------- Escaped Expression Tests
+
+pub fn tokenize_escaped_double_braces_test() {
+  let assert Ok(tokens) = lexer.tokenize("\\{{ name }}")
+
+  tokens
+  |> should.equal([Text("{{ name }}")])
+}
+
+pub fn tokenize_escaped_triple_braces_test() {
+  let assert Ok(tokens) = lexer.tokenize("\\{{{ html }}}")
+
+  tokens
+  |> should.equal([Text("{{{ html }}}")])
+}
+
+pub fn tokenize_escaped_braces_with_text_test() {
+  let assert Ok(tokens) = lexer.tokenize("Use \\{{ variable }} for output")
+
+  tokens
+  |> should.equal([Text("Use {{ variable }} for output")])
+}
+
+pub fn tokenize_escaped_braces_next_to_real_variable_test() {
+  let assert Ok(tokens) =
+    lexer.tokenize("\\{{ escaped }} and {{ real }}")
+
+  tokens
+  |> should.equal([Text("{{ escaped }} and "), Variable("real", 1)])
+}
+
+pub fn tokenize_escaped_triple_braces_next_to_real_test() {
+  let assert Ok(tokens) =
+    lexer.tokenize("\\{{{ raw }}} and {{{ actual }}}")
+
+  tokens
+  |> should.equal([Text("{{{ raw }}} and "), RawVariable("actual", 1)])
+}
+
 // ------------------------------------------------------------- l-if Tests
 
 pub fn tokenize_lm_if_test() {
