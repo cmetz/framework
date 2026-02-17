@@ -21,9 +21,7 @@ beforeEach(() => {
   );
 });
 
-// ----------------------------------------------------------
-// shouldInterceptLink
-// ----------------------------------------------------------
+// ------------------------------------------------------------- shouldInterceptLink
 
 describe("shouldInterceptLink", () => {
   const makeAnchor = (attrs: Record<string, string>): HTMLAnchorElement => {
@@ -125,9 +123,7 @@ describe("shouldInterceptLink", () => {
   });
 });
 
-// ----------------------------------------------------------
-// shouldInterceptForm
-// ----------------------------------------------------------
+// ------------------------------------------------------------- shouldInterceptForm
 
 describe("shouldInterceptForm", () => {
   const makeForm = (attrs: Record<string, string>): HTMLFormElement => {
@@ -215,9 +211,7 @@ describe("shouldInterceptForm", () => {
   });
 });
 
-// ----------------------------------------------------------
-// Cache
-// ----------------------------------------------------------
+// ------------------------------------------------------------- Cache
 
 describe("cache", () => {
   const makeEntry = (overrides?: Partial<import("@/types").NavCacheEntry>) => ({
@@ -267,9 +261,7 @@ describe("cache", () => {
   });
 });
 
-// ----------------------------------------------------------
-// parsePage
-// ----------------------------------------------------------
+// ------------------------------------------------------------- parsePage
 
 describe("parsePage", () => {
   test("extracts body, title, meta, links, and styles", () => {
@@ -335,9 +327,7 @@ describe("parsePage", () => {
   });
 });
 
-// ----------------------------------------------------------
-// mergeHead
-// ----------------------------------------------------------
+// ------------------------------------------------------------- mergeHead
 
 describe("mergeHead", () => {
   test("removes stale meta tags not in the new page", () => {

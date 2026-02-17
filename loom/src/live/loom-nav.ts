@@ -2,12 +2,17 @@ import { CONFIG } from "@/config";
 import type { NavCacheEntry, NavHistoryState } from "@/types";
 
 /**
- * SPA-like navigation that intercepts link clicks, fetches pages
- * over HTTP, and swaps the body — keeping the WebSocket open and
- * recycling live components instead of tearing everything down.
+ * Full page reloads tear down the WebSocket, destroy all live
+ * component state, and force the browser to re-parse the entire
+ * document. Intercepting same-origin link clicks and swapping
+ * just the body avoids all of that, keeping the shared socket
+ * alive and only cycling the live components that actually
+ * changed.
  *
- * Takes lifecycle callbacks from index.ts so it can destroy old
- * LoomLive instances before a swap and initialize new ones after.
+ * Lifecycle callbacks from index.ts let this class stay
+ * decoupled from LoomLive — it only knows how to destroy old
+ * components and initialize new ones, not how they work
+ * internally.
  */
 export class LoomNav {
   private destroyLive: () => void;
@@ -44,9 +49,11 @@ export class LoomNav {
   }
 
   /**
-   * Attaches delegated click/mouseover/mouseout/popstate/submit
-   * listeners on document. Seeds history.state for the initial
-   * page so popstate can identify Loom-managed entries.
+   * Delegated listeners on document avoid per-element binding and
+   * automatically cover dynamically added links. Seeding
+   * history.state on the initial page ensures the first popstate
+   * (back button) can identify this as a Loom-managed entry
+   * rather than falling through to a full reload.
    */
   enable(): void {
     if (this.enabled) return;
@@ -66,7 +73,11 @@ export class LoomNav {
   }
 
   /**
-   * Removes all listeners. Safe to call multiple times.
+   * Tearing down listeners cleanly lets consuming code disable
+   * SPA navigation at runtime — for example, before a full-page
+   * form submission or when switching to a non-Loom section of
+   * the app. The enabled guard makes repeated calls safe without
+   * tracking external state.
    */
   disable(): void {
     if (!this.enabled) return;
@@ -82,17 +93,24 @@ export class LoomNav {
   }
 
   /**
-   * Programmatic navigation. Returns a promise that resolves
-   * after the DOM swap and live component re-initialization.
+   * Exposes SPA navigation as a programmatic API so custom
+   * scripts and the window.Loom.navigate helper can trigger
+   * client-side transitions without simulating link clicks. The
+   * returned promise lets callers await the full swap-and-reinit
+   * cycle.
    */
   async navigate(url: string): Promise<void> {
     await this.performNavigation(url, false);
   }
 
-  // ----------------------------------------------------------
-  // Link interception
-  // ----------------------------------------------------------
-
+  /**
+   * Only left-clicks without modifier keys should trigger SPA
+   * navigation — middle-click, ctrl-click, etc. are intentional
+   * "open in new tab" gestures that the browser should handle
+   * natively. Delegating from document and using closest("a")
+   * catches clicks on child elements inside links (e.g. icons or
+   * spans).
+   */
   private handleClick(e: MouseEvent): void {
     if (e.button !== 0) return;
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -106,8 +124,12 @@ export class LoomNav {
   }
 
   /**
-   * Determines whether a link should be intercepted for SPA
-   * navigation. Exported via the test helper for unit tests.
+   * Not every link should be intercepted — downloads, external
+   * origins, target="_blank", non-HTTP protocols, and hash-only
+   * changes all need native browser handling. The l-no-nav opt-
+   * out lets template authors exclude specific links or regions
+   * from SPA navigation. Kept as a separate method so it can be
+   * tested in isolation.
    */
   shouldInterceptLink(anchor: HTMLAnchorElement): boolean {
     if (anchor.closest("[data-l-no-nav], [l-no-nav]")) return false;
@@ -136,10 +158,13 @@ export class LoomNav {
     return true;
   }
 
-  // ----------------------------------------------------------
-  // Form interception
-  // ----------------------------------------------------------
-
+  /**
+   * GET forms (e.g. search, filters) are functionally equivalent
+   * to link navigations — their result is a new page at a URL
+   * with query parameters. Intercepting them lets search and
+   * filter forms benefit from SPA navigation without requiring
+   * template authors to wire up custom JavaScript.
+   */
   private handleSubmit(e: SubmitEvent): void {
     const form = e.target as HTMLFormElement;
     if (!this.shouldInterceptForm(form)) return;
@@ -153,6 +178,13 @@ export class LoomNav {
     this.performNavigation(action.href, false);
   }
 
+  /**
+   * Only GET forms with same-origin actions can be safely turned
+   * into SPA navigations — POST/PUT/DELETE forms have side
+   * effects that require a real server round-trip, and multipart
+   * forms may carry file uploads. The l-no-nav opt-out lets
+   * authors exclude specific forms from interception.
+   */
   shouldInterceptForm(form: HTMLFormElement): boolean {
     const method = (form.method || "GET").toUpperCase();
     if (method !== "GET") return false;
@@ -171,10 +203,14 @@ export class LoomNav {
     return true;
   }
 
-  // ----------------------------------------------------------
-  // Prefetch
-  // ----------------------------------------------------------
-
+  /**
+   * Prefetching on hover exploits the ~200-400ms gap between
+   * hovering over a link and actually clicking it. The delay
+   * timer avoids fetching for accidental mouse-overs, and the
+   * abort controller lets mouseout cancel an in-flight prefetch.
+   * Cached and in-flight URLs are skipped to avoid redundant
+   * requests.
+   */
   private handleMouseOver(e: MouseEvent): void {
     const anchor = (e.target as Element).closest?.("a");
     if (!anchor || !this.shouldInterceptLink(anchor)) return;
@@ -200,12 +236,23 @@ export class LoomNav {
     }, CONFIG.navPrefetchDelay);
   }
 
+  /**
+   * Cancels the prefetch timer and any in-flight request when the
+   * mouse leaves a link, preventing wasted bandwidth for links
+   * the user didn't intend to visit.
+   */
   private handleMouseOut(e: MouseEvent): void {
     const anchor = (e.target as Element).closest?.("a");
     if (!anchor) return;
     this.cancelPrefetch();
   }
 
+  /**
+   * Both the delay timer and the fetch request need to be
+   * cancelled together — clearing only the timer would leave an
+   * orphaned fetch, and aborting only the fetch could still fire
+   * a stale timer callback.
+   */
   private cancelPrefetch(): void {
     if (this.prefetchTimer) {
       clearTimeout(this.prefetchTimer);
@@ -217,14 +264,23 @@ export class LoomNav {
     }
   }
 
-  // ----------------------------------------------------------
-  // Cache
-  // ----------------------------------------------------------
-
+  /**
+   * URLs must be normalized before use as cache keys so that
+   * "about", "/about", and "https://host/about" all resolve to
+   * the same entry. Using the URL constructor against the current
+   * origin handles relative paths, trailing slashes, and port
+   * normalization.
+   */
   normalizeUrl(href: string): string {
     return new URL(href, location.origin).href;
   }
 
+  /**
+   * Stale cache entries could serve outdated content, so entries
+   * are evicted on read when they exceed the TTL. Returning null
+   * on miss lets the caller fall through to a network fetch
+   * transparently.
+   */
   cacheGet(url: string): NavCacheEntry | null {
     const entry = this.cache.get(url);
     if (!entry) return null;
@@ -235,6 +291,12 @@ export class LoomNav {
     return entry;
   }
 
+  /**
+   * Unbounded caches would grow indefinitely during long sessions.
+   * Evicting the oldest entry when the cap is reached keeps
+   * memory usage predictable while still caching the most
+   * recently visited pages for instant back-navigation.
+   */
   cacheSet(url: string, entry: NavCacheEntry): void {
     if (this.cache.size >= CONFIG.navCacheMaxEntries) {
       const oldest = this.cache.keys().next().value!;
@@ -243,10 +305,14 @@ export class LoomNav {
     this.cache.set(url, entry);
   }
 
-  // ----------------------------------------------------------
-  // Fetch + parse
-  // ----------------------------------------------------------
-
+  /**
+   * Fetches a page as HTML and parses it into a cache entry. The
+   * Accept header ensures the server returns HTML rather than
+   * JSON or other formats. Redirect tracking via resp.redirected
+   * stores the final URL so the address bar reflects where the
+   * user actually landed. Returning null on failure lets the
+   * caller fall back to a full browser navigation.
+   */
   async fetchPage(
     url: string,
     signal?: AbortSignal,
@@ -273,6 +339,15 @@ export class LoomNav {
     }
   }
 
+  /**
+   * Only the body HTML, title, and specific head elements need to
+   * change between pages — scripts, base tags, and charset
+   * declarations stay the same. Parsing into separate categories
+   * lets mergeHead do targeted updates (diff stylesheets, replace
+   * meta tags, swap inline styles) instead of replacing the
+   * entire head, which would cause FOUC from re-downloading
+   * shared CSS.
+   */
   parsePage(html: string): NavCacheEntry {
     const doc = new DOMParser().parseFromString(html, "text/html");
 
@@ -301,10 +376,17 @@ export class LoomNav {
     };
   }
 
-  // ----------------------------------------------------------
-  // Navigation execution
-  // ----------------------------------------------------------
-
+  /**
+   * Orchestrates the full navigation lifecycle: abort any in-
+   * flight navigation, fire a cancelable before-event, resolve
+   * the page (cache/inflight/fetch), destroy old live components,
+   * swap the DOM, update history, init new live components, and
+   * restore scroll. The AbortController prevents stale fetches
+   * from completing after a newer navigation has started.
+   * The before/after custom events let application code hook
+   * into the transition for analytics, loading indicators, or
+   * transition animations.
+   */
   private async performNavigation(
     url: string,
     isPopState: boolean,
@@ -408,11 +490,14 @@ export class LoomNav {
   }
 
   /**
-   * Swaps head elements to match the new page. Replaces meta
-   * tags, does a full swap of stylesheets and inline styles so
-   * page-specific CSS doesn't leak across navigations. Shared
-   * stylesheet links (same href) are kept in place to avoid
-   * FOUC; only stale ones are removed.
+   * Each page may have different meta tags, stylesheets, and
+   * inline styles. Naively replacing the entire head would force
+   * the browser to re-download shared CSS, causing a flash of
+   * unstyled content. Instead, this diffs each category: meta
+   * tags are matched by name/property, stylesheet links are
+   * matched by href (shared ones stay in place), and inline
+   * styles are fully swapped since they're typically page-
+   * specific.
    */
   private mergeHead(entry: NavCacheEntry): void {
     // Build set of meta identifiers the new page has
@@ -434,7 +519,11 @@ export class LoomNav {
       .forEach((existing) => {
         const name = existing.getAttribute("name");
         const property = existing.getAttribute("property");
-        const key = name ? `name:${name}` : property ? `property:${property}` : null;
+        const key = name
+          ? `name:${name}`
+          : property
+            ? `property:${property}`
+            : null;
         if (key && !newMetaKeys.has(key)) {
           existing.remove();
         }
@@ -509,10 +598,10 @@ export class LoomNav {
   }
 
   /**
-   * Replaces the body's children with parsed HTML content.
-   * Uses replaceChildren instead of innerHTML so the browser
-   * fires disconnectedCallback on custom elements and properly
-   * detaches old nodes from the DOM tree.
+   * Using replaceChildren instead of innerHTML ensures the
+   * browser fires disconnectedCallback on any custom elements and
+   * properly detaches old nodes, preventing memory leaks from
+   * orphaned event listeners or observers on the replaced subtree.
    */
   swapBody(html: string): void {
     const template = document.createElement("template");
@@ -521,8 +610,12 @@ export class LoomNav {
   }
 
   /**
-   * Inline scripts in innerHTML are not executed by the browser.
-   * Clone and replace each one so the browser treats it as new.
+   * The browser's HTML parser skips script execution for content
+   * inserted via innerHTML or replaceChildren. Cloning each
+   * script into a fresh element forces the browser to treat it as
+   * newly added, triggering execution. This is necessary for
+   * inline analytics snippets or page-specific initialization
+   * scripts.
    */
   private reExecuteScripts(): void {
     document.body.querySelectorAll("script").forEach((old) => {
@@ -535,10 +628,15 @@ export class LoomNav {
     });
   }
 
-  // ----------------------------------------------------------
-  // Popstate
-  // ----------------------------------------------------------
-
+  /**
+   * The popstate event fires for all history entries, not just
+   * Loom-managed ones. Checking for loomNavId in state
+   * distinguishes our entries from external ones — unknown
+   * entries trigger a full reload to avoid rendering stale or
+   * foreign content. For known entries, the isPopState flag tells
+   * performNavigation to restore scroll position instead of
+   * pushing a new history entry.
+   */
   private handlePopState(e: PopStateEvent): void {
     const state = e.state as NavHistoryState | null;
     if (!state?.loomNavId) {
@@ -550,10 +648,12 @@ export class LoomNav {
     this.performNavigation(state.url, true);
   }
 
-  // ----------------------------------------------------------
-  // Helpers
-  // ----------------------------------------------------------
-
+  /**
+   * Each navigation gets a unique ID so scroll positions can be
+   * stored and restored per history entry. A simple counter
+   * suffices because IDs only need to be unique within the
+   * current page session — they're never persisted or shared.
+   */
   private nextNavId(): string {
     return `nav-${++this.navCounter}`;
   }

@@ -1,19 +1,24 @@
 /**
- * Pure functions for the statics/dynamics tree wire format.
+ * Sending full HTML on every update would waste bandwidth —
+ * most of a template is static markup that never changes. The
+ * statics/dynamics tree format splits a template into fixed
+ * strings (statics) and variable slots (dynamics), so the
+ * server only sends diffs against the dynamic parts. This
+ * module reconstructs full HTML from those trees and applies
+ * incoming diffs in place.
  *
  * A "tree" is { s: string[], d: any[] } where statics and
  * dynamics interleave: s[0] + render(d[0]) + s[1] + ...
- *
- * A dynamic value can be:
- * - string: leaf value
- * - { s, d }: nested subtree (conditional/component)
- * - array of { s, d }: list of subtrees (loop output)
+ * A dynamic value can be a leaf string, a nested subtree
+ * { s, d } for conditionals/components, or an array of
+ * subtrees for loop output.
  */
 
 /**
- * Reconstruct an HTML string from statics and dynamics by
- * interleaving them: statics[0] + render(dynamics[0]) +
- * statics[1] + render(dynamics[1]) + ...
+ * After applying a diff to the dynamics array, morphdom needs a
+ * full HTML string to diff against the current DOM. Interleaving
+ * the unchanged statics with the updated dynamics produces that
+ * string without the server ever re-sending the static parts.
  */
 export function reconstruct(statics: string[], dynamics: any[]): string {
   let result = "";
@@ -27,8 +32,11 @@ export function reconstruct(statics: string[], dynamics: any[]): string {
 }
 
 /**
- * Render a single dynamic value to an HTML string. Handles
- * leaf strings, nested trees, and lists of trees.
+ * Dynamic slots can hold three kinds of values: plain strings
+ * for simple interpolations, nested trees for conditionals and
+ * components (which have their own statics/dynamics), and arrays
+ * of trees for loop output. Dispatching on type here keeps the
+ * reconstruct loop clean while handling the full tree grammar.
  */
 export function renderDynamic(dyn: any): string {
   if (typeof dyn === "string") {
@@ -46,12 +54,13 @@ export function renderDynamic(dyn: any): string {
 }
 
 /**
- * Apply a diff object to a dynamics array in place. The diff
- * keys are string indices into the array. Values can be:
- * - string: replace leaf
- * - array: replace full list
- * - { s, d }: replace full subtree (branch flip)
- * - { d }: nested diff into existing subtree/list
+ * The server sends only the dynamic slots that changed, keyed by
+ * their index in the dynamics array. Mutating the array in place
+ * avoids allocating a new tree on every patch. The diff format
+ * supports four cases: leaf replacement (string), full list swap
+ * (array), full subtree swap like a branch flip ({ s, d }), and
+ * nested diffs into an existing subtree or list ({ d }) for
+ * changes deep in the tree without replacing the outer structure.
  */
 export function applyDiff(dynamics: any[], diff: any): void {
   if (!diff || !dynamics) return;
@@ -80,7 +89,12 @@ export function applyDiff(dynamics: any[], diff: any): void {
 }
 
 /**
- * Apply a diff to a subtree's dynamics array.
+ * Conditionals and components produce nested subtrees with their
+ * own dynamics arrays. When only an inner value changes, the
+ * server sends a nested diff ({ d }) rather than replacing the
+ * entire subtree. Recursing into the subtree's dynamics applies
+ * the same leaf/list/subtree/nested-diff logic at each level,
+ * keeping the update granular regardless of nesting depth.
  */
 export function applySubtreeDiff(tree: any, diff: any): void {
   if (!diff || !tree.d) return;
@@ -109,9 +123,13 @@ export function applySubtreeDiff(tree: any, diff: any): void {
 }
 
 /**
- * Apply a diff to a list of trees. Each key in the diff is
- * an item index, and each value is either a full tree
- * replacement or a nested diff.
+ * Loops produce arrays of subtrees — one per iteration. When
+ * items change, the server sends a diff keyed by list index.
+ * Each entry is either a full tree replacement (when an item's
+ * statics change, e.g. a branch flip inside the loop body) or
+ * a nested diff into the existing item's dynamics (when only
+ * values changed). This avoids replacing the entire list when
+ * a single item updates.
  */
 export function applyListDiff(list: any[], diff: any): void {
   if (!diff) return;

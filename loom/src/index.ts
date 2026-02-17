@@ -32,7 +32,7 @@ let activeLiveInstances: LoomLive[] = [];
  * init is called again after SPA navigation — the existing
  * instance keeps its state intact instead of being replaced.
  */
-const init = () => {
+const initLiveComponents = () => {
   const containers = document.querySelectorAll<HTMLElement>("[data-l-live]");
 
   if (containers.length > 0 && !sharedSocket) {
@@ -56,51 +56,46 @@ const init = () => {
 };
 
 /**
- * Destroys all active LoomLive instances and clears the
- * tracking array. Called by LoomNav before a DOM swap so each
- * component sends its "leave" message to the server.
+ * Live components hold server-side actor state that must be
+ * cleaned up when the page changes. LoomNav calls this before
+ * swapping the DOM so each instance can send its "leave"
+ * message and release its server actor. Clearing the
+ * _loomInstance flag on containers ensures that if the same
+ * element survives a partial DOM swap, it will be re-initialized
+ * fresh rather than treated as already attached.
  */
 const destroyLiveComponents = () => {
   activeLiveInstances.forEach((instance) => instance.destroy());
   activeLiveInstances = [];
 
   document
-    .querySelectorAll<HTMLElement & { _loomInstance?: LoomLive }>(
-      "[data-l-live]",
-    )
+    .querySelectorAll<
+      HTMLElement & { _loomInstance?: LoomLive }
+    >("[data-l-live]")
     .forEach((container) => {
       delete container._loomInstance;
     });
 };
 
-/**
- * Scans for new [data-l-live] containers and initializes them.
- * Called by LoomNav after a DOM swap to bring up live components
- * on the new page.
- */
-const initLiveComponents = () => {
-  init();
-};
-
 const nav = new LoomNav(destroyLiveComponents, initLiveComponents);
 nav.enable();
 
-init();
+initLiveComponents();
 
 /**
- * Exposing Loom on the window object serves two purposes: it
- * lets server-rendered script tags call Loom.reinit() after
- * dynamic content insertion, and it gives debugging tools
- * direct access to the CONFIG, LoomSocket, and LoomLive class
- * without requiring a module bundler. The reinit alias signals
- * intent — callers re-scanning for new containers — even though
- * the implementation is identical to init.
+ * Exposing Loom on the window object lets server-rendered
+ * script tags call Loom.reinit() after dynamic content
+ * insertion and gives debugging tools direct access to
+ * internals without requiring a module bundler. The socket and
+ * nav getters provide live references to the shared instances,
+ * and navigate() offers a programmatic API for triggering
+ * client-side navigation from custom scripts.
  */
 declare global {
   interface Window {
     Loom: {
-      init: typeof init;
-      reinit: typeof init;
+      init: typeof initLiveComponents;
+      reinit: typeof initLiveComponents;
       LoomLive: typeof LoomLive;
       LoomSocket: typeof LoomSocket;
       LoomNav: typeof LoomNav;
@@ -113,8 +108,8 @@ declare global {
 }
 
 window.Loom = {
-  init,
-  reinit: init,
+  init: initLiveComponents,
+  reinit: initLiveComponents,
   LoomLive,
   LoomSocket,
   LoomNav,

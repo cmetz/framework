@@ -34,6 +34,8 @@ beforeEach(() => {
   };
 });
 
+// ------------------------------------------------------------- onReconnect
+
 describe("onReconnect", () => {
   test("returns an unsubscribe function", () => {
     const socket = new LoomSocket();

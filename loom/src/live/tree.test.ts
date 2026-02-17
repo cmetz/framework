@@ -7,6 +7,8 @@ import {
   applyListDiff,
 } from "@/live/tree";
 
+// ------------------------------------------------------------- reconstruct
+
 describe("reconstruct", () => {
   test("simple string dynamic", () => {
     expect(reconstruct(["<p>Count: ", "</p>"], ["42"])).toBe(
@@ -21,9 +23,7 @@ describe("reconstruct", () => {
   });
 
   test("no dynamics", () => {
-    expect(reconstruct(["<p>Static only</p>"], [])).toBe(
-      "<p>Static only</p>",
-    );
+    expect(reconstruct(["<p>Static only</p>"], [])).toBe("<p>Static only</p>");
   });
 
   test("nested subtree dynamic", () => {
@@ -43,9 +43,7 @@ describe("reconstruct", () => {
 
   test("mixed dynamic types", () => {
     const subtree = { s: ["<b>", "</b>"], d: ["bold"] };
-    const list = [
-      { s: ["<li>", "</li>"], d: ["x"] },
-    ];
+    const list = [{ s: ["<li>", "</li>"], d: ["x"] }];
     expect(
       reconstruct(["<div>", " ", " ", "</div>"], ["text", subtree, list]),
     ).toBe("<div>text <b>bold</b> <li>x</li></div>");
@@ -59,6 +57,8 @@ describe("reconstruct", () => {
     );
   });
 });
+
+// ------------------------------------------------------------- renderDynamic
 
 describe("renderDynamic", () => {
   test("string leaf", () => {
@@ -104,9 +104,7 @@ describe("applyDiff", () => {
   });
 
   test("replaces full list (array value)", () => {
-    const dynamics: any[] = [
-      [{ s: ["<li>", "</li>"], d: ["a"] }],
-    ];
+    const dynamics: any[] = [[{ s: ["<li>", "</li>"], d: ["a"] }]];
     const newList = [
       { s: ["<li>", "</li>"], d: ["a"] },
       { s: ["<li>", "</li>"], d: ["b"] },
@@ -116,18 +114,14 @@ describe("applyDiff", () => {
   });
 
   test("replaces full subtree (branch flip)", () => {
-    const dynamics: any[] = [
-      { s: ["<p>yes</p>"], d: [] },
-    ];
+    const dynamics: any[] = [{ s: ["<p>yes</p>"], d: [] }];
     const newTree = { s: ["<p>no</p>"], d: [] };
     applyDiff(dynamics, { "0": newTree });
     expect(dynamics[0]).toEqual(newTree);
   });
 
   test("nested diff into subtree", () => {
-    const dynamics: any[] = [
-      { s: ["<p>", "</p>"], d: ["old"] },
-    ];
+    const dynamics: any[] = [{ s: ["<p>", "</p>"], d: ["old"] }];
     applyDiff(dynamics, { "0": { d: { "0": "new" } } });
     expect(dynamics[0].d[0]).toBe("new");
   });
@@ -156,6 +150,8 @@ describe("applyDiff", () => {
     expect(dynamics).toEqual(["a", "b"]);
   });
 });
+
+// ------------------------------------------------------------- applySubtreeDiff
 
 describe("applySubtreeDiff", () => {
   test("replaces leaf in subtree", () => {

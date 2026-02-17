@@ -3,11 +3,12 @@ import type { ClientMessage, ServerMessage } from "@/types";
 import { buildWsUrl } from "@/live/utils";
 
 /**
- * Shared WebSocket connection manager that multiplexes all live
- * components on a single page over one socket. Each component
- * registers a handler keyed by its auto-assigned ID; incoming
- * messages are routed by the "id" field. Reconnect logic lives
- * here so all components re-join after a single reconnect cycle.
+ * Opening a WebSocket per live component would waste connections
+ * and complicate server-side routing. A single shared socket
+ * multiplexes all components on the page by routing messages via
+ * an "id" field. Centralizing reconnect logic here means every
+ * component re-joins automatically after one reconnect cycle
+ * instead of each managing its own backoff and retry state.
  */
 export class LoomSocket {
   private socket: WebSocket | null = null;
@@ -25,25 +26,31 @@ export class LoomSocket {
   }
 
   /**
-   * Returns the next component ID ("c0", "c1", ...). Each
-   * LoomLive instance calls this once during construction to
-   * get a unique, collision-free identifier for the session.
+   * The server needs a stable ID to route messages to the correct
+   * component actor. Auto-incrementing from the socket guarantees
+   * uniqueness within the session without requiring coordination
+   * between LoomLive instances or the server.
    */
   allocateId(): string {
     return `c${this.nextId++}`;
   }
 
   /**
-   * Registers a message handler for a component. Messages with
-   * a matching "id" field are dispatched to this handler.
+   * Each component needs to receive only the messages intended
+   * for it. Registering a handler keyed by ID lets routeMessage
+   * dispatch incoming frames to the correct LoomLive instance
+   * without the socket knowing anything about component internals.
    */
   register(id: string, handler: (msg: ServerMessage) => void): void {
     this.handlers.set(id, handler);
   }
 
   /**
-   * Unregisters a component's handler and sends a leave message
-   * to the server so the actor is stopped.
+   * Server-side actors hold state and consume resources, so they
+   * must be explicitly stopped when a component is removed.
+   * Sending the leave message here keeps the cleanup centralized
+   * — LoomLive.destroy only needs to call unregister rather than
+   * knowing about the wire protocol.
    */
   unregister(id: string): void {
     this.handlers.delete(id);
@@ -51,9 +58,10 @@ export class LoomSocket {
   }
 
   /**
-   * Sends a message through the shared socket. If the socket
-   * isn't ready yet, the message is queued and flushed once the
-   * connection opens.
+   * Components may fire events before the socket is fully open —
+   * for example, a user clicking a button during reconnection.
+   * Queuing messages and flushing on open ensures no interaction
+   * is silently dropped regardless of connection state.
    */
   send(message: ClientMessage): void {
     if (this.connected && this.socket?.readyState === WebSocket.OPEN) {
@@ -64,11 +72,12 @@ export class LoomSocket {
   }
 
   /**
-   * Registers a callback invoked after a successful reconnect.
-   * Components use this to re-send their join messages. Returns
-   * an unsubscribe function that removes the callback — call it
-   * in destroy() to prevent stale callbacks from firing after
-   * the component is torn down.
+   * After a reconnect the server has no memory of any component —
+   * all actors were stopped when the socket closed. Components
+   * subscribe here so they can re-send their join messages once
+   * the new connection opens. The returned unsubscribe function
+   * prevents destroyed components from attempting to rejoin after
+   * a future reconnect.
    */
   onReconnect(callback: () => void): () => void {
     this.reconnectCallbacks.push(callback);
@@ -79,8 +88,11 @@ export class LoomSocket {
   }
 
   /**
-   * Tears down the shared socket. Sends leave messages for all
-   * registered components, then closes the connection.
+   * Notifying the server about each component before closing lets
+   * it stop all actors immediately rather than waiting for a
+   * timeout. Nulling onclose prevents the reconnect logic from
+   * firing when the socket closes intentionally — without this,
+   * destroy would trigger an unwanted reconnect cycle.
    */
   destroy(): void {
     for (const id of this.handlers.keys()) {
@@ -97,6 +109,13 @@ export class LoomSocket {
     this.connected = false;
   }
 
+  /**
+   * Wiring all four socket callbacks in one place keeps the full
+   * connection lifecycle visible together. The onopen handler
+   * flushes pending messages first (so queued events arrive in
+   * order), then notifies components to rejoin — this ordering
+   * ensures join messages go out before any stale queued events.
+   */
   private connect(): void {
     const wsUrl = buildWsUrl(this.wsUrlOverride, window.location);
 
@@ -128,6 +147,12 @@ export class LoomSocket {
     };
   }
 
+  /**
+   * Messages queued during disconnection must be sent in order
+   * once the socket opens. Draining the queue here rather than
+   * in onopen keeps the callback focused on state transitions
+   * and makes the flush independently testable.
+   */
   private flushPending(): void {
     while (this.pendingMessages.length > 0) {
       const msg = this.pendingMessages.shift()!;
@@ -136,9 +161,13 @@ export class LoomSocket {
   }
 
   /**
-   * Routes an incoming server message to the correct component
-   * handler by its "id" field. Redirects are page-global and
-   * applied immediately without routing.
+   * Most messages target a specific component via the "id" field,
+   * but redirects are page-global — they affect the entire browser
+   * tab regardless of which component triggered them. Handling
+   * redirects before the ID lookup avoids requiring a component
+   * handler for what is fundamentally a navigation action.
+   * Using LoomNav when available keeps redirects within the SPA
+   * flow instead of causing a full page reload.
    */
   private routeMessage(msg: ServerMessage): void {
     if (msg.type === "redirect") {
@@ -158,6 +187,13 @@ export class LoomSocket {
     }
   }
 
+  /**
+   * Network interruptions and server restarts are expected in
+   * production. Exponential backoff avoids hammering the server
+   * with rapid reconnect attempts while still recovering quickly
+   * from brief hiccups. The attempt cap prevents infinite retries
+   * when the server is genuinely down.
+   */
   private attemptReconnect(): void {
     if (this.reconnectAttempts >= CONFIG.maxReconnectAttempts) {
       console.error("[Loom] Max reconnect attempts reached");

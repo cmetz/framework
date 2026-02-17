@@ -1,9 +1,12 @@
 /**
- * The WebSocket protocol uses a discriminated union on "type"
- * so the client can route each message to the correct handler
- * without inspecting the payload. The "id" field identifies
- * which multiplexed component the message belongs to (absent
- * for page-global messages like redirect).
+ * Multiple live components share a single WebSocket, so each
+ * server message needs a "type" discriminant for routing and an
+ * optional "id" to target the correct multiplexed component.
+ * The "s" and "d" fields carry the static/dynamic tree data for
+ * the "trees" message type, while "html", "url", and "error"
+ * serve their respective message types. Keeping all variants in
+ * one flat interface avoids wrapper objects for what are simple
+ * single-payload messages.
  */
 export interface ServerMessage {
   type: "trees" | "patch" | "redirect" | "error";
@@ -16,8 +19,12 @@ export interface ServerMessage {
 }
 
 /**
- * Sent by the client to register a new live component on the
- * multiplexed WebSocket connection.
+ * The server-side actor for a component can't start until it
+ * knows which template module to run and has a valid token.
+ * Sending a join message over the shared socket registers this
+ * component's ID with the server, which validates the token
+ * before spawning an actor. The ID ties all subsequent events
+ * and patches to this specific component instance.
  */
 export interface JoinPayload {
   type: "join";
@@ -27,10 +34,11 @@ export interface JoinPayload {
 }
 
 /**
- * Matches the server-side ClientEvent structure so the JSON
- * serialized by the client deserializes directly into the Gleam
- * type without transformation. The type and id fields route the
- * event to the correct server-side actor.
+ * Mirrors the server-side ClientEvent structure so the JSON
+ * serialized here deserializes directly into the Gleam type
+ * without transformation. The "id" field routes the event to
+ * the correct actor on the shared socket, and special_vars
+ * carries browser-only state the server needs to update props.
  */
 export interface EventPayload {
   type: "event";
@@ -41,8 +49,12 @@ export interface EventPayload {
 }
 
 /**
- * Sent by the client when a live component is destroyed (e.g.
- * SPA navigation) to tell the server to stop the actor.
+ * Server-side actors hold state and consume resources, so they
+ * must be explicitly stopped when a component is removed — for
+ * example, during SPA navigation or when a container is removed
+ * from the DOM. Sending a leave message lets the server clean
+ * up the actor immediately rather than waiting for a WebSocket
+ * timeout.
  */
 export interface LeavePayload {
   type: "leave";
@@ -50,7 +62,11 @@ export interface LeavePayload {
 }
 
 /**
- * Union of all client-to-server message types.
+ * A discriminated union of all client-to-server messages so the
+ * send path can accept any valid outbound message and
+ * TypeScript enforces that each variant has the required fields.
+ * This keeps the socket's send method type-safe without per-
+ * message-type overloads.
  */
 export type ClientMessage = JoinPayload | EventPayload | LeavePayload;
 
@@ -83,9 +99,12 @@ export interface Modifiers {
 }
 
 /**
- * Cached page data from a prefetch or navigation fetch. Stores
- * the parsed body HTML, document title, and head elements so the
- * DOM can be swapped without re-fetching.
+ * Client-side navigation fetches pages as HTML but only needs
+ * to swap the body and update the head. Caching the parsed
+ * parts — body HTML, title, and categorized head elements —
+ * avoids re-fetching and re-parsing on back/forward navigation.
+ * The resolvedUrl tracks redirects so the address bar shows the
+ * final URL, and the timestamp enables cache expiration.
  */
 export interface NavCacheEntry {
   html: string;
@@ -98,8 +117,11 @@ export interface NavCacheEntry {
 }
 
 /**
- * Stored in history.state so popstate can identify Loom-managed
- * entries and restore the correct scroll position.
+ * The popstate event fires for all history entries, not just
+ * Loom-managed ones. Storing a loomNavId marker in
+ * history.state lets the nav handler distinguish its own
+ * entries from external ones and decide whether to intercept
+ * the navigation or let the browser handle it natively.
  */
 export interface NavHistoryState {
   loomNavId: string;

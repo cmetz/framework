@@ -18,6 +18,8 @@ beforeEach(() => {
   globalThis.document = document;
 });
 
+// ------------------------------------------------------------- buildWsUrl
+
 describe("buildWsUrl", () => {
   test("uses override when it starts with ws", () => {
     const url = buildWsUrl("ws://custom:8080/ws", {
@@ -59,6 +61,8 @@ describe("buildWsUrl", () => {
     expect(url).toBe("wss://example.com/custom/path");
   });
 });
+
+// ------------------------------------------------------------- parseModifiers
 
 describe("parseModifiers", () => {
   test("returns defaults when no data attributes set", () => {
@@ -102,6 +106,8 @@ describe("parseModifiers", () => {
     expect(mods.debounce).toBe(150);
   });
 });
+
+// ------------------------------------------------------------- collectSpecialVars
 
 describe("collectSpecialVars", () => {
   test("collects value from input event", () => {
@@ -149,6 +155,8 @@ describe("collectSpecialVars", () => {
     expect(vars.key).toBe("Enter");
   });
 });
+
+// ------------------------------------------------------------- getNodeKey
 
 describe("getNodeKey", () => {
   test("returns null for non-element nodes", () => {
@@ -199,6 +207,8 @@ describe("getNodeKey", () => {
   });
 });
 
+// ------------------------------------------------------------- saveFocus
+
 describe("saveFocus", () => {
   test("returns non-input state when no element is focused", () => {
     const state = saveFocus();
@@ -229,6 +239,8 @@ describe("saveFocus", () => {
     expect(state.handlerId).toBe("update_text");
   });
 });
+
+// ------------------------------------------------------------- restoreFocus
 
 describe("restoreFocus", () => {
   test("does nothing when saved state is not an input", () => {

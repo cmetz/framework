@@ -20,8 +20,12 @@ import { applyDiff, reconstruct } from "@/live/tree";
 const debounceTimers = new WeakMap<Element, ReturnType<typeof setTimeout>>();
 
 /**
- * Tracks the original state of elements that are in a loading
- * state so they can be restored when the server responds.
+ * Loading indicators modify element state (disabled, text,
+ * child visibility) during a server round-trip. Capturing the
+ * original state before modification lets clearLoadingStates
+ * reverse the changes exactly, even for nested remote targets,
+ * without re-reading the DOM or guessing what the pre-loading
+ * state was.
  */
 interface ChildToggleState {
   shownIndicators: HTMLElement[];
@@ -39,11 +43,14 @@ interface LoadingState extends ChildToggleState {
 }
 
 /**
- * Each live container on the page gets its own LoomLive
- * instance that manages event wiring and DOM patching, but
- * shares a single WebSocket connection via LoomSocket. The
- * component registers itself with an auto-assigned ID and
- * re-joins automatically after reconnects.
+ * Each live container on the page needs its own event wiring,
+ * DOM patching, and loading state, but opening a WebSocket per
+ * component would waste connections and complicate server-side
+ * routing. Sharing a single LoomSocket and multiplexing via
+ * component IDs gives each instance isolation while keeping the
+ * connection count to one. The reconnect subscription ensures
+ * the component re-joins the server after network disruptions
+ * without manual intervention.
  */
 export class LoomLive {
   private container: HTMLElement;
@@ -74,9 +81,11 @@ export class LoomLive {
   }
 
   /**
-   * Sends a join message to register this component with the
-   * server. Flushes any events that were queued before the
-   * join completed.
+   * The server-side actor for this component can't process events
+   * until it knows which template module to run and has validated
+   * the token. Sending the join first and then flushing queued
+   * events ensures no user interaction is lost during the brief
+   * startup window.
    */
   private sendJoin(): void {
     this.loomSocket.send({
@@ -93,9 +102,11 @@ export class LoomLive {
   }
 
   /**
-   * Called after a reconnect to re-register the component with
-   * the server. Resets statics/dynamics so the initial trees
-   * message is accepted as fresh state.
+   * After a reconnect the server has no memory of this component
+   * — its actor was stopped when the socket closed. Re-joining
+   * spawns a fresh actor, and clearing statics/dynamics ensures
+   * the next "trees" message is treated as initial state rather
+   * than a diff against stale data.
    */
   private rejoin(): void {
     this.initialized = false;
@@ -105,9 +116,10 @@ export class LoomLive {
   }
 
   /**
-   * Sends an event payload through the shared socket, tagged
-   * with this component's id and type. Events fired before the
-   * join completes are queued.
+   * Events can fire before the join handshake completes — for
+   * example, a user clicking a button while the socket is still
+   * opening. Queuing these events and flushing them after join
+   * ensures no interaction is silently dropped.
    */
   private sendEvent(data: EventPayload): void {
     if (this.initialized) {
@@ -118,11 +130,15 @@ export class LoomLive {
   }
 
   /**
-   * The server sends three message types: patches with new HTML,
-   * redirects for navigation, and errors for diagnostics. Routing
-   * them through a single handler keeps the protocol contract
-   * explicit and makes it easy to extend with new message types
-   * later.
+   * The server sends trees (initial state), patches (diffs
+   * against the current dynamics), and errors. The "trees"
+   * message stores statics and dynamics without touching the DOM
+   * because the server-rendered HTML is already correct on first
+   * load. Subsequent "patch" messages apply diffs to the stored
+   * dynamics and reconstruct full HTML from the static/dynamic
+   * tree before morphing. Clearing loading state on every
+   * response type ensures the UI never gets stuck in a loading
+   * state.
    */
   private handleMessage(message: ServerMessage): void {
     switch (message.type) {
@@ -155,13 +171,13 @@ export class LoomLive {
    * Replacing innerHTML wholesale would destroy input state,
    * focus, scroll position, and trigger unnecessary reflows.
    * morphdom diffs the old and new DOM trees and applies only the
-   * minimal set of mutations, preserving unaffected nodes. The
-   * getNodeKey callback uses data-l-* attributes so morphdom can
-   * track elements across re-renders even when their position in
-   * the tree changes.
+   * minimal set of mutations, preserving unaffected nodes.
    *
-   * Event listeners must be re-attached after patching because
-   * morphdom may insert new elements that weren't present in the
+   * The onBeforeElUpdated check skips nested live containers so a
+   * parent patch doesn't overwrite a child component's
+   * independently-managed DOM. Event listeners and loading
+   * indicator visibility are re-established after every patch
+   * because morphdom may insert new elements that weren't in the
    * previous render.
    */
   private applyPatch(html: string): void {
@@ -280,18 +296,15 @@ export class LoomLive {
   }
 
   /**
-   * Marks an element as loading during a server round-trip.
-   * Adds the "l-loading" CSS class, auto-disables click/submit
-   * elements (unless l-no-disable is present), and swaps text
-   * content if l-loading-text is specified.
-   *
-   * If the element has children with l-loading (empty value)
-   * attributes, those children are shown and their non-loading
-   * siblings are hidden via inline display styles.
-   *
-   * If the element has an id, remote elements with
-   * l-loading="thatId" also enter loading state with the same
-   * child toggle behavior.
+   * Users need visual feedback that something is happening during
+   * the server round-trip — without it, clicks feel unresponsive.
+   * This applies multiple feedback signals (CSS class, disabled
+   * state, text swap, indicator children) so template authors can
+   * style loading however they want using CSS alone. Remote
+   * targets (linked by ID) let a button trigger loading
+   * indicators on a different part of the page, like a table
+   * that's being refreshed. All original state is captured so
+   * clearLoadingStates can reverse everything exactly.
    */
   private applyLoadingState(element: HTMLElement): void {
     const wasDisabled = element.hasAttribute("disabled");
@@ -344,9 +357,13 @@ export class LoomLive {
   }
 
   /**
-   * Shows direct children with l-loading="" (empty value) and
-   * hides their non-indicator siblings. Returns the toggle state
-   * so it can be reversed later.
+   * Loading indicators are hidden by default and only revealed
+   * during a round-trip. Toggling visibility via inline display
+   * styles rather than adding/removing DOM nodes avoids layout
+   * shifts and keeps the indicator elements stable for CSS
+   * transitions. Returning the toggle state lets
+   * clearLoadingStates reverse the changes without re-querying
+   * the DOM.
    */
   private toggleLoadingChildren(element: HTMLElement): ChildToggleState {
     const shownIndicators: HTMLElement[] = [];
@@ -375,9 +392,11 @@ export class LoomLive {
   }
 
   /**
-   * Returns true if an element is a loading indicator (l-loading
-   * or data-l-loading with empty value), as opposed to a remote
-   * loading scope (l-loading="someId" with a non-empty value).
+   * The l-loading attribute serves double duty: an empty value
+   * marks the element as an inline indicator to show/hide, while
+   * a non-empty value links it as a remote loading scope.
+   * Distinguishing the two prevents remote scopes from being
+   * incorrectly hidden during the initial indicator scan.
    */
   private isLoadingIndicator(el: HTMLElement): boolean {
     return (
@@ -387,10 +406,12 @@ export class LoomLive {
   }
 
   /**
-   * Restores all elements from their loading state. Called when
-   * the server responds with a patch, trees, or error message.
-   * Removes the "l-loading" class, restores disabled state,
-   * restores original text, and reverses child visibility toggles.
+   * Every server response — trees, patch, or error — signals the
+   * end of a round-trip, so all loading indicators must be
+   * reversed. Using the captured original state ensures elements
+   * return to exactly their pre-loading condition, including the
+   * correct disabled state and text content, even if multiple
+   * elements were loading simultaneously.
    */
   private clearLoadingStates(): void {
     this.loadingElements.forEach((state, element) => {
@@ -417,6 +438,12 @@ export class LoomLive {
     this.loadingElements.clear();
   }
 
+  /**
+   * Shared reversal logic for both the triggering element and its
+   * remote targets. Re-hiding indicators and restoring sibling
+   * display values from the captured state avoids duplicating
+   * this logic in clearLoadingStates for each target type.
+   */
   private reverseChildToggle(state: ChildToggleState): void {
     state.shownIndicators.forEach((el) => {
       el.style.display = "none";
@@ -427,12 +454,12 @@ export class LoomLive {
   }
 
   /**
-   * Hides all loading indicator elements (l-loading or
-   * data-l-loading with empty value) inside this container.
-   * Called on init and after every patch so that indicators stay
-   * hidden until a loading state is triggered. Elements with a
-   * non-empty value like l-loading="someId" are remote scopes,
-   * not indicators, and are left visible.
+   * Loading indicators must be hidden on init and after every
+   * patch so they only appear during an active round-trip.
+   * Running this after morphdom catches any new indicator
+   * elements introduced by the patch. Only empty-value l-loading
+   * attributes are targeted — non-empty values are remote scopes
+   * that manage their own visibility through applyLoadingState.
    */
   private hideLoadingIndicators(): void {
     this.container
@@ -468,9 +495,11 @@ export class LoomLive {
   }
 
   /**
-   * Unregisters from the shared socket so the server stops the
-   * actor. Called when the container is intentionally removed,
-   * e.g. during SPA navigation.
+   * Unregistering from the socket sends a "leave" message so the
+   * server stops the actor immediately rather than waiting for a
+   * timeout. Unsubscribing from reconnect events prevents a
+   * destroyed component from attempting to rejoin after a future
+   * reconnect.
    */
   destroy(): void {
     this.unsubReconnect();
