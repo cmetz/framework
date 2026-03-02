@@ -6,6 +6,7 @@ import glimr/cache/cache.{type CachePool, NotFound, SerializationError}
 import glimr/cache/file/cache as fcache
 import glimr/cache/file/pool
 import glimr/cache/file_cache
+import glimr/config
 import simplifile
 
 const test_cache_path = "priv/test/cache"
@@ -20,13 +21,20 @@ fn setup_config() -> Nil {
   driver = \"file\"
   path = \"" <> test_cache_path <> "\"
 ")
+  clear_config_cache()
+  config.load()
   Nil
 }
 
 fn cleanup_config() -> Nil {
   let _ = simplifile.delete(config_file)
+  let _ = simplifile.delete(config_dir)
+  clear_config_cache()
   Nil
 }
+
+@external(erlang, "glimr_cache_test_ffi", "clear_config_cache")
+fn clear_config_cache() -> Nil
 
 fn setup_test_pool() -> CachePool {
   // Clean up any existing test cache

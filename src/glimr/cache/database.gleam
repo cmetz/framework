@@ -16,7 +16,6 @@ import glimr/cache/cache.{
   type CacheError, type CachePool, ConnectionError, NotFound, SerializationError,
 }
 import glimr/cache/driver.{type CacheStore, DatabaseStore}
-import glimr/config/cache as cache_config
 import glimr/db/db.{type DbPool}
 import glimr/utils/unix_timestamp
 
@@ -29,7 +28,7 @@ import glimr/utils/unix_timestamp
 /// store name to get caching going.
 ///
 pub fn start(db_pool: DbPool, name: String) -> CachePool {
-  let stores = cache_config.load()
+  let stores = driver.load_stores()
   let store = driver.find_by_name(name, stores)
   let table = extract_table(store)
 

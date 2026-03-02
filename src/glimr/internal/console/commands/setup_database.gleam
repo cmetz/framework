@@ -1,4 +1,3 @@
-import glimr/config/database
 import glimr/console/command.{type Args, type Command, Argument, Flag}
 import glimr/console/console
 import glimr/db/driver
@@ -28,7 +27,7 @@ pub fn command() -> Command {
 fn run(args: Args) -> Nil {
   let name = command.get_arg(args, "name")
   let create_sqlite = command.has_flag(args, "sqlite")
-  let connections = database.load()
+  let connections = driver.load_connections()
 
   // Validate that the connection exists in config
   case driver.get_connection_safe(connections, name) {

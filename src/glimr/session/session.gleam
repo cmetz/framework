@@ -21,7 +21,7 @@ import gleam/http/response
 import gleam/option
 import gleam/otp/actor
 import gleam/string
-import glimr/config/session as session_config
+import glimr/config
 import glimr/session/cookie_store
 import glimr/session/store
 import wisp.{type Request, type Response}
@@ -274,11 +274,13 @@ pub fn start_cookie() -> Session {
 /// ```
 ///
 pub fn load(req: Request, next: fn(Request, Session) -> Response) -> Response {
-  let config = session_config.load()
+  let cookie_name = config.get_string("session.cookie")
+  let lifetime = config.get_int("session.lifetime")
+  let expire_on_close = config.get_bool("session.expire_on_close")
 
   // Read or generate session ID
   let #(session_id, is_new) = case
-    wisp.get_cookie(req, config.cookie, wisp.Signed)
+    wisp.get_cookie(req, cookie_name, wisp.Signed)
   {
     Ok(id) -> #(id, False)
     Error(_) -> #(generate_id(), True)
@@ -318,7 +320,14 @@ pub fn load(req: Request, next: fn(Request, Session) -> Response) -> Response {
       // Set cookie with session value (ID for server stores, payload for cookie stores)
       let value = store.cookie_value(state.id, state.data, state.flash)
 
-      set_session_cookie(resp, req, config.cookie, value, config)
+      set_session_cookie(
+        resp,
+        req,
+        cookie_name,
+        value,
+        lifetime,
+        expire_on_close,
+      )
     }
 
     Error(_) -> resp
@@ -507,7 +516,8 @@ fn set_session_cookie(
   req: Request,
   name: String,
   value: String,
-  config: session_config.SessionConfig,
+  lifetime: Int,
+  expire_on_close: Bool,
 ) -> Response {
   let scheme = case req.host {
     "localhost" | "127.0.0.1" | "[::1]" if req.scheme == http.Http ->
@@ -518,9 +528,9 @@ fn set_session_cookie(
     _ -> http.Https
   }
 
-  let max_age = case config.expire_on_close {
+  let max_age = case expire_on_close {
     True -> option.None
-    False -> option.Some(config.lifetime * 60)
+    False -> option.Some(lifetime * 60)
   }
 
   let attributes =

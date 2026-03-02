@@ -13,7 +13,6 @@ import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import glimr/config/database
 import glimr/console/console
 import glimr/db/driver
 import glimr/db/gen/migrate/cleanup
@@ -42,7 +41,7 @@ pub fn run(name: String, model_filter: Option(List(String)), verbose: Bool) {
   }
 
   // Resolve driver type from database.toml config
-  let connections = database.load()
+  let connections = driver.load_connections()
   let connection = driver.find_by_name(name, connections)
   let driver_type = driver.connection_type(connection)
 

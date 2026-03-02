@@ -1,5 +1,5 @@
 import gleeunit/should
-import glimr/config/app as app_config
+import glimr/config
 import simplifile
 
 const config_dir = "config"
@@ -9,25 +9,27 @@ const config_file = "config/app.toml"
 fn setup(content: String) -> Nil {
   let _ = simplifile.create_directory_all(config_dir)
   let _ = simplifile.write(config_file, content)
-  clear_app_config()
+  clear_config_cache()
   Nil
 }
 
 fn cleanup() -> Nil {
   let _ = simplifile.delete(config_file)
-  clear_app_config()
+  let _ = simplifile.delete(config_dir)
+  clear_config_cache()
   Nil
 }
 
 // ------------------------------------------------------------- Default Config
 
-pub fn defaults_when_no_file_test() {
-  clear_app_config()
+pub fn returns_error_when_no_file_test() {
+  clear_config_cache()
   let _ = simplifile.delete(config_file)
 
-  let config = app_config.load()
+  config.load()
 
-  config.static_directory |> should.equal("/static")
+  config.get_string_or("app.static.directory")
+  |> should.be_error()
 
   cleanup()
 }
@@ -41,34 +43,37 @@ pub fn parses_custom_config_test() {
 ",
   )
 
-  let config = app_config.load()
+  config.load()
 
-  config.static_directory |> should.equal("/assets")
+  config.get_string("app.static.directory")
+  |> should.equal("/assets")
 
   cleanup()
 }
 
-pub fn invalid_toml_uses_defaults_test() {
+pub fn invalid_toml_returns_error_test() {
   setup("not valid toml {{{}}")
 
-  let config = app_config.load()
+  config.load()
 
-  config.static_directory |> should.equal("/static")
+  config.get_string_or("app.static.directory")
+  |> should.be_error()
 
   cleanup()
 }
 
-pub fn empty_file_uses_defaults_test() {
+pub fn empty_file_returns_error_test() {
   setup("")
 
-  let config = app_config.load()
+  config.load()
 
-  config.static_directory |> should.equal("/static")
+  config.get_string_or("app.static.directory")
+  |> should.be_error()
 
   cleanup()
 }
 
 // ------------------------------------------------------------- FFI Helpers
 
-@external(erlang, "glimr_app_config_test_ffi", "clear_app_config")
-fn clear_app_config() -> Nil
+@external(erlang, "glimr_app_config_test_ffi", "clear_config_cache")
+fn clear_config_cache() -> Nil

@@ -1,7 +1,6 @@
 import gleam/dict
 import gleeunit/should
 import glimr/cache/driver as cache_driver
-import glimr/config/database
 import glimr/console/command.{Args, Argument, Command, Flag, Option}
 import glimr/db/driver.{SqliteConnection}
 
@@ -121,8 +120,8 @@ pub fn full_command_creation_test() {
 
 pub fn resolve_connection_replaces_default_with_first_connection_test() {
   // Seed the cache with a known connection
-  database.clear_cache()
-  cache_db_config([
+  driver.clear_cache()
+  cache_db_connections([
     SqliteConnection(name: "mydb", database: Ok("./data.db"), pool_size: Ok(5)),
   ])
 
@@ -138,12 +137,12 @@ pub fn resolve_connection_replaces_default_with_first_connection_test() {
   command.get_option(resolved, "database")
   |> should.equal("mydb")
 
-  database.clear_cache()
+  driver.clear_cache()
 }
 
 pub fn resolve_connection_keeps_explicit_connection_name_test() {
-  database.clear_cache()
-  cache_db_config([
+  driver.clear_cache()
+  cache_db_connections([
     SqliteConnection(name: "mydb", database: Ok("./data.db"), pool_size: Ok(5)),
   ])
 
@@ -159,12 +158,12 @@ pub fn resolve_connection_keeps_explicit_connection_name_test() {
   command.get_option(resolved, "database")
   |> should.equal("mydb")
 
-  database.clear_cache()
+  driver.clear_cache()
 }
 
 pub fn resolve_connection_errors_when_no_connections_test() {
-  database.clear_cache()
-  cache_db_config([])
+  driver.clear_cache()
+  cache_db_connections([])
 
   let parsed =
     Args(
@@ -176,12 +175,12 @@ pub fn resolve_connection_errors_when_no_connections_test() {
   command.resolve_connection(parsed)
   |> should.be_error()
 
-  database.clear_cache()
+  driver.clear_cache()
 }
 
 pub fn resolve_connection_errors_when_connection_not_found_test() {
-  database.clear_cache()
-  cache_db_config([
+  driver.clear_cache()
+  cache_db_connections([
     SqliteConnection(name: "mydb", database: Ok("./data.db"), pool_size: Ok(5)),
   ])
 
@@ -195,7 +194,7 @@ pub fn resolve_connection_errors_when_connection_not_found_test() {
   command.resolve_connection(parsed)
   |> should.be_error()
 
-  database.clear_cache()
+  driver.clear_cache()
 }
 
 pub fn resolve_connection_noop_without_database_option_test() {
@@ -211,14 +210,14 @@ pub fn resolve_connection_noop_without_database_option_test() {
   resolved |> should.equal(parsed)
 }
 
-@external(erlang, "glimr_kernel_ffi", "cache_db_config")
-fn cache_db_config(connections: List(driver.Connection)) -> Nil
+@external(erlang, "glimr_command_test_ffi", "cache_db_connections")
+fn cache_db_connections(connections: List(driver.Connection)) -> Nil
 
-@external(erlang, "glimr_kernel_ffi", "cache_cache_config")
-fn cache_store_config(stores: List(cache_driver.CacheStore)) -> Nil
+@external(erlang, "glimr_command_test_ffi", "cache_cache_stores")
+fn cache_cache_stores(stores: List(cache_driver.CacheStore)) -> Nil
 
-@external(erlang, "glimr_command_test_ffi", "clear_cache_config")
-fn clear_cache_config() -> Nil
+@external(erlang, "glimr_command_test_ffi", "clear_cache_stores")
+fn clear_cache_stores() -> Nil
 
 // ------------------------------------------------------------- Full Command Flow
 
@@ -349,8 +348,8 @@ pub fn cache_db_handler_preserves_existing_args_test() {
 // ------------------------------------------------------------- resolve_cache
 
 pub fn resolve_cache_replaces_default_with_first_store_test() {
-  clear_cache_config()
-  cache_store_config([
+  clear_cache_stores()
+  cache_cache_stores([
     cache_driver.DatabaseStore(name: "main", database: "mydb", table: "cache"),
   ])
 
@@ -366,12 +365,12 @@ pub fn resolve_cache_replaces_default_with_first_store_test() {
   command.get_option(resolved, "cache")
   |> should.equal("main")
 
-  clear_cache_config()
+  clear_cache_stores()
 }
 
 pub fn resolve_cache_keeps_explicit_store_name_test() {
-  clear_cache_config()
-  cache_store_config([
+  clear_cache_stores()
+  cache_cache_stores([
     cache_driver.FileStore(name: "files", path: "priv/cache"),
     cache_driver.DatabaseStore(
       name: "db_cache",
@@ -392,12 +391,12 @@ pub fn resolve_cache_keeps_explicit_store_name_test() {
   command.get_option(resolved, "cache")
   |> should.equal("db_cache")
 
-  clear_cache_config()
+  clear_cache_stores()
 }
 
 pub fn resolve_cache_errors_when_no_stores_configured_test() {
-  clear_cache_config()
-  cache_store_config([])
+  clear_cache_stores()
+  cache_cache_stores([])
 
   let parsed =
     Args(
@@ -409,12 +408,12 @@ pub fn resolve_cache_errors_when_no_stores_configured_test() {
   command.resolve_cache(parsed)
   |> should.be_error()
 
-  clear_cache_config()
+  clear_cache_stores()
 }
 
 pub fn resolve_cache_errors_when_store_not_found_test() {
-  clear_cache_config()
-  cache_store_config([
+  clear_cache_stores()
+  cache_cache_stores([
     cache_driver.FileStore(name: "files", path: "priv/cache"),
   ])
 
@@ -428,7 +427,7 @@ pub fn resolve_cache_errors_when_store_not_found_test() {
   command.resolve_cache(parsed)
   |> should.be_error()
 
-  clear_cache_config()
+  clear_cache_stores()
 }
 
 pub fn resolve_cache_noop_without_cache_option_test() {

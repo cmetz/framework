@@ -1,25 +1,30 @@
-//// Database Connection Configuration
+//// Database Connection Drivers
 ////
-//// Provides connection types for configuring database
-//// connections in a type-safe way. Users define connections in
-//// their database_provider.gleam file which is loaded at
-//// runtime.
+//// Database connections are configured in config/database.toml
+//// with environment variable interpolation for secrets. This
+//// module parses those configs into typed Connection values
+//// that the pool startup code consumes — so a missing
+//// DATABASE_URL blows up at boot with a clear message rather
+//// than on the first query ten minutes later.
 
+import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import glimr/config
 import glimr/db/db.{type Config}
+import tom
 
 // ------------------------------------------------------------- Public Types
 
-/// Represents a named database connection configuration. Each
-/// connection has a name that identifies it and connection
-/// parameters specific to the database type.
-///
-/// Use `PostgresUriConnection` for PostgreSQL with a connection
-/// URL. Use `PostgresConnection` for PostgreSQL with individual
-/// parameters. Use `SqliteConnection` for SQLite databases.
+/// Config fields are wrapped in Result because they come from
+/// environment variables that might not be set yet. Deferring
+/// the error to pool startup (via to_config) means the config
+/// module doesn't panic during parsing, and the error message
+/// can name the exact missing env var. Postgres supports both a
+/// single URL and individual host/port/db params because some
+/// hosting providers give you one format, some the other.
 ///
 pub type Connection {
   PostgresUriConnection(
@@ -43,9 +48,10 @@ pub type Connection {
   )
 }
 
-/// Identifies the underlying database type for a connection.
-/// Currently supports Postgres and SQLite as the two available
-/// database driver implementations.
+/// The migration generator needs to know which SQL dialect to
+/// emit (SERIAL vs INTEGER PRIMARY KEY AUTOINCREMENT, BOOLEAN
+/// vs INTEGER, etc.) without caring about connection details.
+/// This simple enum is enough to branch on.
 ///
 pub type DriverType {
   Postgres
@@ -54,9 +60,10 @@ pub type DriverType {
 
 // ------------------------------------------------------------- Public Functions
 
-/// Returns whether the connection is for Postgres or SQLite.
-/// Inspects the connection variant to determine the database
-/// type without needing to access individual fields.
+/// The migration generator and SQL emitter need to know which
+/// dialect to use without caring about URLs or credentials.
+/// Both Postgres variants map to the same DriverType since they
+/// produce the same SQL.
 ///
 pub fn connection_type(connection: Connection) -> DriverType {
   case connection {
@@ -66,9 +73,11 @@ pub fn connection_type(connection: Connection) -> DriverType {
   }
 }
 
-/// Returns the name identifying this connection configuration.
-/// The name is used to look up specific connections when
-/// multiple database connections are configured in the app.
+/// Every connection variant has a name field but in a different
+/// position. This saves callers from writing the same
+/// three-branch pattern match every time they just need the
+/// name — which comes up constantly in logging and config
+/// lookups.
 ///
 pub fn connection_name(connection: Connection) -> String {
   case connection {
@@ -78,9 +87,10 @@ pub fn connection_name(connection: Connection) -> String {
   }
 }
 
-/// Returns a new connection with the pool size overridden to
-/// the specified value. Useful for console commands that only
-/// need a single connection.
+/// Console commands like `./glimr migrate` only need one
+/// database connection, not the pool of 10 the web server uses.
+/// Overriding the pool size to 1 avoids wasting connections and
+/// speeds up command startup.
 ///
 pub fn with_pool_size(connection: Connection, size: Int) -> Connection {
   case connection {
@@ -101,8 +111,11 @@ pub fn with_pool_size(connection: Connection, size: Int) -> Connection {
   }
 }
 
-/// Converts a Connection to a db.Config. Panics with a helpful
-/// message if any required environment variables are missing.
+/// This is where env var errors finally surface. The Connection
+/// holds Results from config parsing; this function unwraps
+/// them all at once. If DATABASE_URL isn't set, you get a panic
+/// naming the exact connection and parameter rather than a
+/// cryptic driver error later.
 ///
 pub fn to_config(connection: Connection) -> Config {
   case connection {
@@ -148,9 +161,11 @@ pub fn to_config(connection: Connection) -> Config {
   }
 }
 
-/// Validates that all required parameters for a connection are
-/// present. Returns a list of missing parameter names, which
-/// will be empty if the connection is fully configured.
+/// The `./glimr db:check` command calls this to report all
+/// missing env vars at once instead of crashing on the first
+/// one. Returning a list lets the CLI show "missing: host,
+/// username, password" in a single message so you can fix
+/// everything in one pass.
 ///
 pub fn validate(connection: Connection) -> List(String) {
   case connection {
@@ -211,9 +226,11 @@ pub fn validate(connection: Connection) -> List(String) {
   }
 }
 
-/// Finds a connection by name from a list of connections.
-/// Returns Error(Nil) if the connection is not found instead of
-/// panicking. Useful when connection existence is uncertain.
+/// Some callers need to check whether a connection exists
+/// without crashing — like the database watcher checking if a
+/// connection name from a file path is valid. Returns Error
+/// instead of panicking so those callers can handle the miss
+/// gracefully.
 ///
 pub fn get_connection_safe(
   connections: List(Connection),
@@ -222,9 +239,10 @@ pub fn get_connection_safe(
   list.find(connections, fn(c: Connection) { c.name == name })
 }
 
-/// Searches through a list of connections to find one with the
-/// specified name. Returns Ok with the connection if found, or
-/// Error(Nil) if no connection matches the given name.
+/// When a developer passes `--connection main` to a CLI command
+/// and that connection doesn't exist, the worst thing we could
+/// do is silently continue. Panicking with the exact name and
+/// pointing at config/database.toml tells them what to fix.
 ///
 pub fn find_by_name(name: String, connections: List(Connection)) -> Connection {
   let conn =
@@ -241,11 +259,103 @@ pub fn find_by_name(name: String, connections: List(Connection)) -> Connection {
   }
 }
 
+/// Connections are loaded once and cached in persistent_term so
+/// every subsequent call is a fast lookup. The first call reads
+/// config/database.toml, parses each [connections.*] entry, and
+/// caches the result. Returns an empty list if no config exists
+/// — which is fine for projects that don't use a database.
+///
+pub fn load_connections() -> List(Connection) {
+  case config.get_cached("db_connections") {
+    Ok(connections) -> connections
+    Error(_) -> {
+      let connections = load_connections_from_config()
+      config.cache("db_connections", connections)
+      connections
+    }
+  }
+}
+
+/// Tests that exercise different database configurations need
+/// to start fresh between runs. Without clearing, the
+/// persistent_term cache would serve stale config from the
+/// previous test case.
+///
+pub fn clear_cache() -> Nil {
+  config.clear_cached("db_connections")
+}
+
 // ------------------------------------------------------------- Private Functions
 
-/// Unwraps a Result or panics with a helpful error message
-/// indicating which connection and parameter is missing. Used
-/// internally to provide clear configuration error messages.
+/// Reads config/database.toml via the unified config system and
+/// parses each [connections.*] section into a typed Connection.
+/// Called once by load_connections and cached for all
+/// subsequent lookups.
+///
+fn load_connections_from_config() -> List(Connection) {
+  case config.get_table("database.connections") {
+    Ok(connections_table) -> {
+      connections_table
+      |> dict.to_list
+      |> list.map(fn(entry) {
+        let #(name, conn_toml) = entry
+        parse_connection(name, conn_toml)
+      })
+    }
+    Error(_) -> []
+  }
+}
+
+/// "postgres_url" gets you a single-URL connection, "postgres"
+/// gives you individual host/port/db fields, and "sqlite" just
+/// needs a file path. Defaulting unknown driver strings to
+/// Postgres preserves backward compatibility with older config
+/// files that didn't specify a driver.
+///
+fn parse_connection(name: String, toml: tom.Toml) -> Connection {
+  let driver_str = config.toml_get_string(toml, "driver", "postgres")
+
+  case driver_str {
+    "postgres" ->
+      PostgresConnection(
+        name: name,
+        host: config.toml_get_env_string(toml, "host"),
+        port: config.toml_get_env_int(toml, "port"),
+        database: config.toml_get_env_string(toml, "database"),
+        username: config.toml_get_env_string(toml, "username"),
+        password: config.toml_get_env_string(toml, "password"),
+        pool_size: config.toml_get_env_int(toml, "pool_size"),
+      )
+    "postgres_url" ->
+      PostgresUriConnection(
+        name: name,
+        url: config.toml_get_env_string(toml, "url"),
+        pool_size: config.toml_get_env_int(toml, "pool_size"),
+      )
+    "sqlite" ->
+      SqliteConnection(
+        name: name,
+        database: config.toml_get_env_string(toml, "database"),
+        pool_size: config.toml_get_env_int(toml, "pool_size"),
+      )
+    _ ->
+      PostgresConnection(
+        name: name,
+        host: config.toml_get_env_string(toml, "host"),
+        port: config.toml_get_env_int(toml, "port"),
+        database: config.toml_get_env_string(toml, "database"),
+        username: config.toml_get_env_string(toml, "username"),
+        password: config.toml_get_env_string(toml, "password"),
+        pool_size: config.toml_get_env_int(toml, "pool_size"),
+      )
+  }
+}
+
+/// A bare `let assert Ok(x) = result` would crash with a
+/// generic match error. Wrapping the panic with the connection
+/// name and parameter name means the developer sees "Connection
+/// 'main' is missing required parameter: host" instead of
+/// digging through a stack trace.
 ///
 fn unwrap_or_panic(
   result: Result(a, String),
@@ -265,9 +375,10 @@ fn unwrap_or_panic(
   }
 }
 
-/// Converts a snake_case or lowercase name to PascalCase. Used
-/// for generating type names from connection names. Splits on
-/// underscores and capitalizes each segment.
+/// Connection names like "main_db" need to become "MainDb" when
+/// generating Gleam type names and module references. The code
+/// generator calls this to produce valid PascalCase identifiers
+/// from user-chosen connection names.
 ///
 pub fn to_pascal_case(name: String) -> String {
   name
@@ -275,9 +386,10 @@ pub fn to_pascal_case(name: String) -> String {
   |> do_pascal_case("")
 }
 
-/// Recursive helper for to_pascal_case. Processes each segment
-/// of the split string, capitalizing and concatenating them
-/// into the final PascalCase result.
+/// Gleam doesn't have a built-in capitalize-and-join, so we
+/// recurse over the underscore-split segments. Each segment
+/// gets capitalized and appended — "main" + "db" becomes "Main"
+/// + "Db" = "MainDb".
 ///
 fn do_pascal_case(parts: List(String), acc: String) -> String {
   case parts {

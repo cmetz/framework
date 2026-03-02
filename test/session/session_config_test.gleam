@@ -1,5 +1,5 @@
 import gleeunit/should
-import glimr/config/session
+import glimr/config
 import simplifile
 
 const config_dir = "config"
@@ -10,107 +10,92 @@ fn setup_config(content: String) -> Nil {
   let _ = simplifile.create_directory_all(config_dir)
   let _ = simplifile.write(config_file, content)
   // Clear persistent_term cache so load() re-reads the file
-  clear_session_config()
+  clear_config_cache()
   Nil
 }
 
 fn cleanup_config() -> Nil {
   let _ = simplifile.delete(config_file)
-  clear_session_config()
+  let _ = simplifile.delete(config_dir)
+  clear_config_cache()
   Nil
 }
 
-@external(erlang, "glimr_session_test_ffi", "clear_session_config")
-fn clear_session_config() -> Nil
+@external(erlang, "glimr_session_test_ffi", "clear_config_cache")
+fn clear_config_cache() -> Nil
 
 // ------------------------------------------------------------- Default Config Tests
 
-pub fn load_defaults_when_no_file_test() {
+pub fn returns_errors_when_no_file_test() {
   cleanup_config()
 
-  let config = session.load()
+  config.load()
 
-  config.table |> should.equal("sessions")
-  config.cookie |> should.equal("glimr_session")
-  config.lifetime |> should.equal(120)
-  config.expire_on_close |> should.equal(False)
+  config.get_string_or("session.table") |> should.be_error()
+  config.get_string_or("session.cookie") |> should.be_error()
+  config.get_int_or("session.lifetime") |> should.be_error()
+  config.get_bool_or("session.expire_on_close") |> should.be_error()
 }
 
 // ------------------------------------------------------------- Custom Config Tests
 
 pub fn load_custom_config_test() {
   setup_config(
-    "[session]
-  table = \"user_sessions\"
-  cookie = \"my_app_session\"
-  lifetime = 60
-  expire_on_close = true
+    "table = \"user_sessions\"
+cookie = \"my_app_session\"
+lifetime = 60
+expire_on_close = true
 ",
   )
 
-  let config = session.load()
+  config.load()
 
-  config.table |> should.equal("user_sessions")
-  config.cookie |> should.equal("my_app_session")
-  config.lifetime |> should.equal(60)
-  config.expire_on_close |> should.equal(True)
+  config.get_string("session.table")
+  |> should.equal("user_sessions")
+  config.get_string("session.cookie")
+  |> should.equal("my_app_session")
+  config.get_int("session.lifetime") |> should.equal(60)
+  config.get_bool("session.expire_on_close") |> should.equal(True)
 
   cleanup_config()
 }
 
-pub fn load_partial_config_uses_defaults_test() {
-  setup_config(
-    "[session]
-  cookie = \"custom_cookie\"
-",
-  )
+pub fn load_partial_config_test() {
+  setup_config("cookie = \"custom_cookie\"\n")
 
-  let config = session.load()
+  config.load()
 
-  config.table |> should.equal("sessions")
-  config.cookie |> should.equal("custom_cookie")
-  config.lifetime |> should.equal(120)
-  config.expire_on_close |> should.equal(False)
+  config.get_string_or("session.table") |> should.be_error()
+  config.get_string("session.cookie")
+  |> should.equal("custom_cookie")
+  config.get_int_or("session.lifetime") |> should.be_error()
+  config.get_bool_or("session.expire_on_close") |> should.be_error()
 
   cleanup_config()
 }
 
 // ------------------------------------------------------------- Invalid Config Tests
 
-pub fn load_invalid_toml_returns_defaults_test() {
+pub fn load_invalid_toml_returns_errors_test() {
   setup_config("this is not valid toml {{{}}")
 
-  let config = session.load()
+  config.load()
 
-  config.table |> should.equal("sessions")
-  config.cookie |> should.equal("glimr_session")
-  config.lifetime |> should.equal(120)
-  config.expire_on_close |> should.equal(False)
+  config.get_string_or("session.table") |> should.be_error()
+  config.get_string_or("session.cookie") |> should.be_error()
+  config.get_int_or("session.lifetime") |> should.be_error()
+  config.get_bool_or("session.expire_on_close") |> should.be_error()
 
   cleanup_config()
 }
 
-pub fn load_empty_file_returns_defaults_test() {
+pub fn load_empty_file_returns_errors_test() {
   setup_config("")
 
-  let config = session.load()
+  config.load()
 
-  config.table |> should.equal("sessions")
-  config.cookie |> should.equal("glimr_session")
-
-  cleanup_config()
-}
-
-pub fn load_wrong_section_returns_defaults_test() {
-  setup_config(
-    "[wrong_section]
-  table = \"other\"
-",
-  )
-
-  let config = session.load()
-
-  config.table |> should.equal("sessions")
+  config.get_string_or("session.table") |> should.be_error()
+  config.get_string_or("session.cookie") |> should.be_error()
 
   cleanup_config()
 }

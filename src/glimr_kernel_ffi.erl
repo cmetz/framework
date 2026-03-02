@@ -1,58 +1,23 @@
 -module(glimr_kernel_ffi).
--export([cache_db_config/1, get_cached_db_config/0, clear_db_config/0]).
--export([cache_route_groups/1, get_cached_route_groups/0]).
--export([cache_cache_config/1, get_cached_cache_config/0]).
--export([cache_session_config/1, get_cached_session_config/0]).
+-export([cache_config/2, get_cached_config/1, clear_cached_config/1]).
 -export([cache_session_store/1, get_cached_session_store/0]).
--export([cache_auth_config/1, get_cached_auth_config/0]).
--export([cache_app_config/1, get_cached_app_config/0]).
 
-cache_db_config(Connections) ->
-    persistent_term:put(glimr_db_config, Connections),
+cache_config(Key, Value) ->
+    persistent_term:put({glimr_config, Key}, Value),
     nil.
 
-get_cached_db_config() ->
-    try persistent_term:get(glimr_db_config) of
-        Connections -> {ok, Connections}
+get_cached_config(Key) ->
+    try persistent_term:get({glimr_config, Key}) of
+        Value -> {ok, Value}
     catch
         error:badarg -> {error, nil}
     end.
 
-clear_db_config() ->
-    persistent_term:erase(glimr_db_config),
-    nil.
-
-cache_route_groups(Groups) ->
-    persistent_term:put(glimr_route_groups, Groups),
-    nil.
-
-get_cached_route_groups() ->
-    try persistent_term:get(glimr_route_groups) of
-        Groups -> {ok, Groups}
+clear_cached_config(Key) ->
+    try persistent_term:erase({glimr_config, Key}) of
+        _ -> nil
     catch
-        error:badarg -> {error, nil}
-    end.
-
-cache_cache_config(Stores) ->
-    persistent_term:put(glimr_cache_config, Stores),
-    nil.
-
-get_cached_cache_config() ->
-    try persistent_term:get(glimr_cache_config) of
-        Stores -> {ok, Stores}
-    catch
-        error:badarg -> {error, nil}
-    end.
-
-cache_session_config(Config) ->
-    persistent_term:put(glimr_session_config, Config),
-    nil.
-
-get_cached_session_config() ->
-    try persistent_term:get(glimr_session_config) of
-        Config -> {ok, Config}
-    catch
-        error:badarg -> {error, nil}
+        error:badarg -> nil
     end.
 
 cache_session_store(Store) ->
@@ -62,28 +27,6 @@ cache_session_store(Store) ->
 get_cached_session_store() ->
     try persistent_term:get(glimr_session_store) of
         Store -> {ok, Store}
-    catch
-        error:badarg -> {error, nil}
-    end.
-
-cache_auth_config(Config) ->
-    persistent_term:put(glimr_auth_config, Config),
-    nil.
-
-get_cached_auth_config() ->
-    try persistent_term:get(glimr_auth_config) of
-        Config -> {ok, Config}
-    catch
-        error:badarg -> {error, nil}
-    end.
-
-cache_app_config(Config) ->
-    persistent_term:put(glimr_app_config, Config),
-    nil.
-
-get_cached_app_config() ->
-    try persistent_term:get(glimr_app_config) of
-        Config -> {ok, Config}
     catch
         error:badarg -> {error, nil}
     end.

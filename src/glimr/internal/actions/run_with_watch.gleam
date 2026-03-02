@@ -12,13 +12,13 @@ import gleam/erlang/process
 import gleam/io
 import gleam/list
 import gleam/string
+import glimr/config
 import glimr/console/console
 import glimr/internal/actions/compile_commands
 import glimr/internal/actions/compile_database
 import glimr/internal/actions/compile_loom
 import glimr/internal/actions/compile_routes
 import glimr/internal/actions/run_hooks
-import glimr/internal/config.{type Config}
 import glimr/internal/dev_proxy
 import simplifile
 
@@ -36,7 +36,7 @@ type Port
 /// requests are buffered during restarts instead of failing
 /// with connection refused.
 ///
-pub fn run(cfg: Config) -> Nil {
+pub fn run() -> Nil {
   let app_port = config.app_port()
   let dev_proxy_port = config.dev_proxy_port()
 
@@ -45,7 +45,7 @@ pub fn run(cfg: Config) -> Nil {
   let initial_mtimes = get_watched_file_mtimes("src")
   let port = start_gleam_run()
   start_output_reader(port)
-  watch_loop(initial_mtimes, port, cfg, False)
+  watch_loop(initial_mtimes, port, False)
 }
 
 // ------------------------------------------------------------- Private Functions
@@ -59,7 +59,6 @@ pub fn run(cfg: Config) -> Nil {
 fn watch_loop(
   last_mtimes: Dict(String, Int),
   port: Port,
-  cfg: Config,
   had_compile_error: Bool,
 ) -> Nil {
   process.sleep(1000)
@@ -68,7 +67,7 @@ fn watch_loop(
   let changed_files = find_changed_files(last_mtimes, current_mtimes)
 
   case changed_files {
-    [] -> watch_loop(current_mtimes, port, cfg, False)
+    [] -> watch_loop(current_mtimes, port, False)
     files -> {
       let controller_changed =
         list.any(files, fn(f) {
@@ -125,7 +124,7 @@ fn watch_loop(
         database_changed
       {
         True, _, _, _ -> {
-          case cfg.routes.auto_compile {
+          case config.get_bool("glimr.routes.auto_compile") {
             True -> {
               let route_related_files =
                 list.filter(files, fn(f) {
@@ -141,18 +140,18 @@ fn watch_loop(
 
               // Recompile all routes when controllers or validators change
               case compile_routes.run(False) {
-                Ok(_) -> watch_loop(current_mtimes, port, cfg, False)
+                Ok(_) -> watch_loop(current_mtimes, port, False)
                 Error(msg) -> {
                   io.println(console.error(msg))
-                  watch_loop(current_mtimes, port, cfg, True)
+                  watch_loop(current_mtimes, port, True)
                 }
               }
             }
-            False -> watch_loop(current_mtimes, port, cfg, False)
+            False -> watch_loop(current_mtimes, port, False)
           }
         }
         _, True, _, _ -> {
-          case cfg.loom.auto_compile {
+          case config.get_bool("glimr.loom.auto_compile") {
             True -> {
               let loom_files =
                 list.filter(files, fn(f) {
@@ -177,13 +176,13 @@ fn watch_loop(
                   }
                 })
 
-              watch_loop(current_mtimes, port, cfg, loom_had_error)
+              watch_loop(current_mtimes, port, loom_had_error)
             }
-            False -> watch_loop(current_mtimes, port, cfg, False)
+            False -> watch_loop(current_mtimes, port, False)
           }
         }
         _, _, True, _ -> {
-          case cfg.commands.auto_compile {
+          case config.get_bool("glimr.commands.auto_compile") {
             True -> {
               let command_files =
                 list.filter(files, fn(f) {
@@ -204,13 +203,13 @@ fn watch_loop(
                   True
                 }
               }
-              watch_loop(current_mtimes, port, cfg, cmd_had_error)
+              watch_loop(current_mtimes, port, cmd_had_error)
             }
-            False -> watch_loop(current_mtimes, port, cfg, False)
+            False -> watch_loop(current_mtimes, port, False)
           }
         }
         _, _, _, True -> {
-          case cfg.database.auto_gen {
+          case config.get_bool("glimr.database.auto_gen") {
             True -> {
               let db_files =
                 list.filter(files, fn(f) {
@@ -241,15 +240,15 @@ fn watch_loop(
                   }
                 })
 
-              watch_loop(current_mtimes, port, cfg, db_had_error)
+              watch_loop(current_mtimes, port, db_had_error)
             }
-            False -> watch_loop(current_mtimes, port, cfg, False)
+            False -> watch_loop(current_mtimes, port, False)
           }
         }
         False, False, False, False -> {
           // Skip restart if only compiled files changed after a compile error
           case only_compiled_files && had_compile_error {
-            True -> watch_loop(current_mtimes, port, cfg, False)
+            True -> watch_loop(current_mtimes, port, False)
             False -> {
               // Don't print "File changes detected" for compiled files
               case only_compiled_files {
@@ -262,12 +261,14 @@ fn watch_loop(
                 }
               }
 
-              case list.is_empty(cfg.hooks.run_reload_pre) {
+              let run_reload_pre =
+                config.get_string_list("glimr.hooks.run.reload.pre")
+              case list.is_empty(run_reload_pre) {
                 True -> Nil
                 False -> {
                   io.println("")
                   io.println(console.warning("Running pre-reload hooks..."))
-                  case run_hooks.run(cfg.hooks.run_reload_pre) {
+                  case run_hooks.run(run_reload_pre) {
                     Ok(_) -> Nil
                     Error(msg) -> {
                       io.println(console.error(msg))
@@ -276,12 +277,14 @@ fn watch_loop(
                 }
               }
 
-              case list.is_empty(cfg.hooks.run_reload_post_modified) {
+              let run_reload_post_modified =
+                config.get_string_list("glimr.hooks.run.reload.post-modified")
+              case list.is_empty(run_reload_post_modified) {
                 True -> Nil
                 False -> {
                   io.println("")
                   io.println(console.warning("Running post-modified hooks..."))
-                  case run_hooks.run(cfg.hooks.run_reload_post_modified) {
+                  case run_hooks.run(run_reload_post_modified) {
                     Ok(_) -> Nil
                     Error(msg) -> {
                       io.println(console.error(msg))
@@ -295,7 +298,7 @@ fn watch_loop(
               stop_port(port)
               let new_port = start_gleam_run()
               start_output_reader(new_port)
-              watch_loop(current_mtimes, new_port, cfg, False)
+              watch_loop(current_mtimes, new_port, False)
             }
           }
         }

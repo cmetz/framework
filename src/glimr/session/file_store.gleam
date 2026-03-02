@@ -15,7 +15,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import glimr/cache/file/pool.{type Pool}
-import glimr/config/session as session_config
+import glimr/config
 import glimr/session/payload
 import glimr/session/store.{type SessionStore}
 import glimr/utils/unix_timestamp
@@ -32,13 +32,13 @@ import simplifile
 ///
 @internal
 pub fn create(pool: Pool) -> SessionStore {
-  let config = session_config.load()
+  let lifetime = config.get_int("session.lifetime")
   let base_path = pool.get_path(pool) <> "/sessions"
 
   store.new(
     load: fn(session_id) { load(base_path, session_id) },
     save: fn(session_id, data, flash) {
-      save(base_path, session_id, data, flash, config.lifetime)
+      save(base_path, session_id, data, flash, lifetime)
     },
     destroy: fn(session_id) { destroy(base_path, session_id) },
     gc: fn() { gc(base_path) },

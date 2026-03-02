@@ -8,7 +8,7 @@
 //// duplicating the value across middleware and config.
 ////
 
-import glimr/config/app as app_config
+import glimr/config
 import glimr/http/kernel.{type Next}
 import wisp.{type Request, type Response}
 
@@ -21,12 +21,12 @@ import wisp.{type Request, type Response}
 /// middleware that only applies to dynamic routes.
 ///
 pub fn run(req: Request, ctx: context, next: Next(context)) -> Response {
-  let config = app_config.load()
+  let static_directory = config.get_string("app.static.directory")
 
   use <- wisp.serve_static(
     req,
-    under: config.static_directory,
-    from: "priv" <> config.static_directory,
+    under: static_directory,
+    from: "priv" <> static_directory,
   )
 
   next(req, ctx)

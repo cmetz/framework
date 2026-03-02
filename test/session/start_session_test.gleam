@@ -3,6 +3,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import gleeunit/should
+import glimr/config
 import glimr/session/cookie_store
 import glimr/session/session
 import glimr/session/store
@@ -22,14 +23,14 @@ fn setup(expire_on_close: Bool) -> Nil {
     False -> "false"
   }
 
-  let _ = simplifile.write(session_config_file, "[session]
-  table = \"sessions\"
-  cookie = \"test_session\"
-  lifetime = 120
-  expire_on_close = " <> expire_str <> "
+  let _ = simplifile.write(session_config_file, "table = \"sessions\"
+cookie = \"test_session\"
+lifetime = 120
+expire_on_close = " <> expire_str <> "
 ")
 
-  clear_session_config()
+  clear_config_cache()
+  config.load()
 
   // Use cookie store — simplest, no pool needed
   let s = cookie_store.create()
@@ -40,7 +41,8 @@ fn setup(expire_on_close: Bool) -> Nil {
 
 fn cleanup() -> Nil {
   let _ = simplifile.delete(session_config_file)
-  clear_session_config()
+  let _ = simplifile.delete(config_dir)
+  clear_config_cache()
   clear_session_store()
   Nil
 }
@@ -118,8 +120,8 @@ fn find_set_cookie(
 
 // ------------------------------------------------------------- FFI Helpers
 
-@external(erlang, "glimr_session_test_ffi", "clear_session_config")
-fn clear_session_config() -> Nil
+@external(erlang, "glimr_session_test_ffi", "clear_config_cache")
+fn clear_config_cache() -> Nil
 
 @external(erlang, "glimr_session_test_ffi", "clear_session_store")
 fn clear_session_store() -> Nil

@@ -7,11 +7,11 @@
 
 import gleam/list
 import gleam/result
+import glimr/config
 import glimr/internal/actions/compile_commands
 import glimr/internal/actions/compile_database
 import glimr/internal/actions/compile_loom
 import glimr/internal/actions/compile_routes
-import glimr/internal/config.{type Config}
 import simplifile
 
 // ------------------------------------------------------------- Public Functions
@@ -23,23 +23,23 @@ import simplifile
 /// Stops on the first error so you fix one thing at a time
 /// instead of scrolling through a wall of failures.
 ///
-pub fn run(cfg: Config) -> Result(Nil, String) {
-  use _ <- result.try(case cfg.routes.auto_compile {
+pub fn run() -> Result(Nil, String) {
+  use _ <- result.try(case config.get_bool("glimr.routes.auto_compile") {
     True -> compile_routes.run(False)
     False -> Ok(Nil)
   })
 
-  use _ <- result.try(case cfg.loom.auto_compile {
+  use _ <- result.try(case config.get_bool("glimr.loom.auto_compile") {
     True -> compile_loom.run(False)
     False -> Ok(Nil)
   })
 
-  use _ <- result.try(case cfg.commands.auto_compile {
+  use _ <- result.try(case config.get_bool("glimr.commands.auto_compile") {
     True -> compile_commands.run(False)
     False -> Ok(Nil)
   })
 
-  case cfg.database.auto_gen {
+  case config.get_bool("glimr.database.auto_gen") {
     True -> compile_database_all()
     False -> Ok(Nil)
   }

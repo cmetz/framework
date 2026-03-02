@@ -172,7 +172,6 @@ pub fn write_compiled_file(
 //// pattern matching over this compiled route approach, take a
 //// look at the docs link below detailing how to do so.
 ////
-//// See:
 //// https://github.com/glimr-org/glimr?tab=readme-ov-file#direct-pattern-matching
 ////
 

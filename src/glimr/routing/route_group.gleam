@@ -11,9 +11,8 @@
 
 import gleam/dict
 import gleam/list
-import glimr/config/config
+import glimr/config
 import glimr/http/kernel.{type MiddlewareGroup}
-import simplifile
 import tom
 
 // ------------------------------------------------------------- Public Types
@@ -37,49 +36,29 @@ pub type RouteGroupConfig {
 /// back to a single default group — route grouping is optional.
 ///
 pub fn load() -> List(RouteGroupConfig) {
-  case get_cached() {
+  case config.get_cached("route_groups") {
     Ok(groups) -> groups
     Error(_) -> {
-      let groups = load_from_file()
-      cache(groups)
+      let groups = load_from_config()
+      config.cache("route_groups", groups)
       groups
     }
   }
 }
 
-/// Separating file I/O from caching lets load() decide whether
-/// to read the file or use the cache. Returning an empty list
-/// on read failure avoids crashing when route_group.toml
-/// doesn't exist — most apps won't need groups at all.
-///
-fn load_from_file() -> List(RouteGroupConfig) {
-  case simplifile.read("config/route_group.toml") {
-    Ok(content) -> parse(content)
-    Error(_) -> []
-  }
-}
-
 // ------------------------------------------------------------- Private Functions
 
-/// The [groups.*] nesting lets users define multiple named
-/// groups (e.g., web, api, admin) each with its own prefix and
-/// middleware stack. Iterating dict.to_list preserves all
-/// entries so no group definition is silently dropped.
+/// Reads route group config from the unified config system.
 ///
-fn parse(content: String) -> List(RouteGroupConfig) {
-  case tom.parse(content) {
-    Ok(toml) -> {
-      case dict.get(toml, "groups") {
-        Ok(tom.Table(groups)) -> {
-          groups
-          |> dict.to_list
-          |> list.map(fn(entry) {
-            let #(name, group_toml) = entry
-            parse_group(name, group_toml)
-          })
-        }
-        _ -> []
-      }
+fn load_from_config() -> List(RouteGroupConfig) {
+  case config.get_table("route_group.groups") {
+    Ok(groups_table) -> {
+      groups_table
+      |> dict.to_list
+      |> list.map(fn(entry) {
+        let #(name, group_toml) = entry
+        parse_group(name, group_toml)
+      })
     }
     Error(_) -> []
   }
@@ -88,13 +67,11 @@ fn parse(content: String) -> List(RouteGroupConfig) {
 /// "web" and "api" map to built-in kernel middleware pipelines
 /// with sensible defaults (CSRF for web, JSON parsing for api).
 /// The Custom fallback lets users define their own middleware
-/// stacks without modifying the framework — the string is
-/// passed through so the generated code can reference it by
-/// name.
+/// stacks without modifying the framework.
 ///
 fn parse_group(name: String, toml: tom.Toml) -> RouteGroupConfig {
-  let prefix = config.get_string(toml, "prefix", "")
-  let middleware_str = config.get_string(toml, "middleware", "web")
+  let prefix = config.toml_get_string(toml, "prefix", "")
+  let middleware_str = config.toml_get_string(toml, "middleware", "web")
 
   let middleware = case middleware_str {
     "web" -> kernel.Web
@@ -104,19 +81,3 @@ fn parse_group(name: String, toml: tom.Toml) -> RouteGroupConfig {
 
   RouteGroupConfig(name: name, prefix: prefix, middleware: middleware)
 }
-
-// ------------------------------------------------------------- FFI Bindings
-
-/// Stores the parsed group list in persistent_term so every
-/// subsequent call to load() across all BEAM processes gets a
-/// near-zero-cost read instead of re-parsing the TOML file.
-///
-@external(erlang, "glimr_kernel_ffi", "cache_route_groups")
-fn cache(groups: List(RouteGroupConfig)) -> Nil
-
-/// Returns the cached group list if it exists, or Error(Nil) on
-/// the first call before cache() has been called. load() uses
-/// this to skip file I/O on every call after the initial load.
-///
-@external(erlang, "glimr_kernel_ffi", "get_cached_route_groups")
-fn get_cached() -> Result(List(RouteGroupConfig), Nil)

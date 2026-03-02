@@ -7,12 +7,12 @@
 
 import gleam/io
 import gleam/result
+import glimr/config
 import glimr/console/command.{type Args, type Command}
 import glimr/console/console
 import glimr/internal/actions/auto_compile
 import glimr/internal/actions/run_build
 import glimr/internal/actions/run_hooks
-import glimr/internal/config
 
 const description = "Build the application"
 
@@ -32,13 +32,13 @@ pub fn command() -> Command {
 /// CI pipelines get a clear signal.
 ///
 fn run(_args: Args) -> Nil {
-  let cfg = config.load()
-
   let result = {
-    use _ <- result.try(auto_compile.run(cfg))
-    use _ <- result.try(run_hooks.run(cfg.hooks.build_pre))
+    use _ <- result.try(auto_compile.run())
+    use _ <- result.try(
+      run_hooks.run(config.get_string_list("glimr.hooks.build.pre")),
+    )
     use _ <- result.try(run_build.run())
-    run_hooks.run(cfg.hooks.build_post)
+    run_hooks.run(config.get_string_list("glimr.hooks.build.post"))
   }
 
   case result {

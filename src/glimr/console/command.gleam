@@ -19,13 +19,11 @@ import glimr/cache/cache.{type CachePool}
 import glimr/cache/database as cache_database
 import glimr/cache/driver.{type CacheStore, DatabaseStore, FileStore, RedisStore} as cache_driver
 import glimr/cache/file_cache
-import glimr/config/cache as cache_config
-import glimr/config/database
+import glimr/config
 import glimr/console/console
 import glimr/db/db.{type Config, type DbPool}
 import glimr/db/driver
 import glimr/glimr
-import glimr/internal/config
 
 // ------------------------------------------------------------- Public types
 
@@ -233,7 +231,7 @@ pub fn get_option(parsed: Args, name: String) -> String {
 /// inconsistently.
 ///
 pub fn run(cmd: Command) -> Nil {
-  config.load_env()
+  config.load()
   let #(cmd_name, args) = extract_command_name(get_args())
 
   // If the args passed have help flags (--h, -h), then we can just
@@ -284,7 +282,7 @@ pub fn resolve_connection(parsed: Args) -> Result(Args, String) {
   case dict.get(parsed.options, "database") {
     Error(_) -> Ok(parsed)
     Ok(db_name) -> {
-      let connections = database.load()
+      let connections = driver.load_connections()
 
       // Resolve "_default" to the first connection
       use name <- result.try(case db_name {
@@ -316,7 +314,7 @@ pub fn resolve_cache(parsed: Args) -> Result(Args, String) {
   case dict.get(parsed.options, "cache") {
     Error(_) -> Ok(parsed)
     Ok(store_name) -> {
-      let stores = cache_config.load()
+      let stores = cache_driver.load_stores()
 
       // Resolve "_default" to the first store
       use name <- result.try(case store_name {
@@ -362,7 +360,7 @@ fn resolve_or_error(result: Result(Args, String), next: fn(Args) -> Nil) -> Nil 
 ///
 fn with_db_pool(args: Args, user_handler: fn(Args, DbPool) -> Nil) -> Nil {
   let db_name = get_option(args, "database")
-  let connections = database.load()
+  let connections = driver.load_connections()
 
   // Connection is guaranteed to exist (validated by resolve_connection)
   let assert Ok(conn) =
@@ -399,7 +397,7 @@ fn with_db_pool(args: Args, user_handler: fn(Args, DbPool) -> Nil) -> Nil {
 ///
 fn with_cache_pool(args: Args, user_handler: fn(Args, CachePool) -> Nil) -> Nil {
   let cache_name = get_option(args, "cache")
-  let stores = cache_config.load()
+  let stores = cache_driver.load_stores()
 
   // Store is guaranteed to exist (validated by resolve_cache)
   let assert Ok(store) =
@@ -427,12 +425,12 @@ fn with_cache_pool(args: Args, user_handler: fn(Args, CachePool) -> Nil) -> Nil 
     }
     DatabaseStore(_, db_name, table) -> {
       // Start a database pool for the referenced connection
-      let connections = database.load()
+      let connections = driver.load_connections()
       let assert Ok(conn) =
         list.find(connections, fn(c) { driver.connection_name(c) == db_name })
 
       let conn = driver.with_pool_size(conn, 1)
-      let config = driver.to_config(conn)
+      let db_config = driver.to_config(conn)
 
       let module = case driver.connection_type(conn) {
         driver.Postgres -> "glimr_postgres@postgres"
@@ -441,7 +439,7 @@ fn with_cache_pool(args: Args, user_handler: fn(Args, CachePool) -> Nil) -> Nil 
 
       suppress_pool_shutdown_reports()
 
-      case dynamic_start_pool(module, config) {
+      case dynamic_start_pool(module, db_config) {
         Ok(db_pool) -> {
           let pool = cache_database.start_with_table(db_pool, table)
           user_handler(args, pool)
@@ -471,7 +469,7 @@ fn with_cache_db_pool(
   user_handler: fn(Args, DbPool, String) -> Nil,
 ) -> Nil {
   let cache_name = get_option(args, "cache")
-  let stores = cache_config.load()
+  let stores = cache_driver.load_stores()
 
   // Store is guaranteed to exist (validated by resolve_cache)
   let assert Ok(store) =
@@ -483,12 +481,12 @@ fn with_cache_db_pool(
       let updated_args =
         Args(..args, options: dict.insert(args.options, "database", db_name))
 
-      let connections = database.load()
+      let connections = driver.load_connections()
       let assert Ok(conn) =
         list.find(connections, fn(c) { driver.connection_name(c) == db_name })
 
       let conn = driver.with_pool_size(conn, 1)
-      let config = driver.to_config(conn)
+      let db_config = driver.to_config(conn)
 
       let module = case driver.connection_type(conn) {
         driver.Postgres -> "glimr_postgres@postgres"
@@ -497,7 +495,7 @@ fn with_cache_db_pool(
 
       suppress_pool_shutdown_reports()
 
-      case dynamic_start_pool(module, config) {
+      case dynamic_start_pool(module, db_config) {
         Ok(pool) -> {
           user_handler(updated_args, pool, table)
           db.stop_pool(pool)

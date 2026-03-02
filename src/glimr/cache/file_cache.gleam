@@ -10,7 +10,6 @@ import glimr/cache/cache.{type CachePool}
 import glimr/cache/driver
 import glimr/cache/file/cache as file_cache
 import glimr/cache/file/pool
-import glimr/config/cache as cache_config
 import glimr/session/file_store
 import glimr/session/session.{type Session}
 import glimr/session/store
@@ -52,7 +51,7 @@ pub fn start_session(pool: pool.Pool) -> Session {
 ///
 @internal
 pub fn start_pool(name: String) -> pool.Pool {
-  let stores = cache_config.load()
+  let stores = driver.load_stores()
   let store = driver.find_by_name(name, stores)
   pool.start_pool(store)
 }

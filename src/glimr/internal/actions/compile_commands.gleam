@@ -13,8 +13,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/regexp
 import gleam/string
+import glimr/config
 import glimr/console/console
-import glimr/internal/config
 import simplifile
 import tom
 
@@ -49,8 +49,12 @@ pub fn run(verbose: Bool) -> Result(Nil, String) {
     False -> Nil
   }
 
-  let cfg = config.load()
-  let commands = scan_commands(cfg.commands.packages)
+  let packages = config.get_string_list("glimr.commands.packages")
+  let packages = case packages {
+    [] -> ["glimr"]
+    _ -> packages
+  }
+  let commands = scan_commands(packages)
 
   // Check for collisions
   case find_collisions(commands) {

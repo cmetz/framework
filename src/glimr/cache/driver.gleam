@@ -7,7 +7,10 @@
 //// at boot. It's the bridge between "what the developer
 //// configured" and "what the backend needs to start."
 
+import gleam/dict
 import gleam/list
+import glimr/config
+import tom
 
 // ------------------------------------------------------------- Public Types
 
@@ -101,6 +104,22 @@ pub fn store_table(store: CacheStore) -> String {
   }
 }
 
+/// Stores are loaded once from config/cache.toml and then
+/// cached in persistent_term so every subsequent call is a fast
+/// lookup. Returns an empty list if no config exists, which is
+/// fine for projects that don't use caching.
+///
+pub fn load_stores() -> List(CacheStore) {
+  case config.get_cached("cache_stores") {
+    Ok(stores) -> stores
+    Error(_) -> {
+      let stores = load_stores_from_config()
+      config.cache("cache_stores", stores)
+      stores
+    }
+  }
+}
+
 /// Developers reference cache stores by name in their code —
 /// cache.start("default") or cache.start("sessions"). If they
 /// typo the name, the worst thing we could do is silently
@@ -116,9 +135,7 @@ pub fn find_by_name(name: String, stores: List(CacheStore)) -> CacheStore {
     Ok(s) -> s
     _ ->
       panic as {
-        "The cache store '"
-        <> name
-        <> "' does not exist in your config_cache.gleam"
+        "The cache store '" <> name <> "' does not exist in config/cache.toml"
       }
   }
 }
@@ -147,7 +164,7 @@ pub fn find_database_store(
       Error(
         "No cache store configured for database '"
         <> database
-        <> "' in config_cache.gleam",
+        <> "' in config/cache.toml",
       )
     [store] -> Ok(store)
     _ ->
@@ -155,6 +172,55 @@ pub fn find_database_store(
         "Multiple cache stores configured for database '"
         <> database
         <> "'. Only one DatabaseStore per database is allowed.",
+      )
+  }
+}
+
+// ------------------------------------------------------------- Private Functions
+
+/// Reads config/cache.toml via the unified config system and
+/// parses each [stores.*] section into a typed CacheStore.
+/// Called once by load_stores and cached for all subsequent
+/// lookups.
+///
+fn load_stores_from_config() -> List(CacheStore) {
+  case config.get_table("cache.stores") {
+    Ok(stores_table) -> {
+      stores_table
+      |> dict.to_list
+      |> list.map(fn(entry) {
+        let #(name, store_toml) = entry
+        parse_store(name, store_toml)
+      })
+    }
+    Error(_) -> []
+  }
+}
+
+/// Each driver string maps to a specific CacheStore variant.
+/// Defaulting to FileStore for unknown drivers means a typo
+/// degrades to the simplest backend rather than crashing.
+///
+fn parse_store(name: String, toml: tom.Toml) -> CacheStore {
+  let driver_str = config.toml_get_string(toml, "driver", "file")
+
+  case driver_str {
+    "redis" ->
+      RedisStore(
+        name: name,
+        url: config.toml_get_env_string(toml, "url"),
+        pool_size: config.toml_get_env_int(toml, "pool_size"),
+      )
+    "database" ->
+      DatabaseStore(
+        name: name,
+        database: config.toml_get_string(toml, "database", "main"),
+        table: config.toml_get_string(toml, "table", "cache"),
+      )
+    _ ->
+      FileStore(
+        name: name,
+        path: config.toml_get_string(toml, "path", "priv/cache"),
       )
   }
 }

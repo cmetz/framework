@@ -1,4 +1,4 @@
-import glimr/config/session as session_config
+import glimr/config
 import glimr/console/command.{type Args, type Command, Flag}
 import glimr/db/db.{type DbPool}
 import glimr/internal/actions/gen_session_table
@@ -27,9 +27,9 @@ pub fn command() -> Command {
 fn run(args: Args, pool: DbPool) -> Nil {
   let database = command.get_option(args, "database")
   let should_migrate = command.has_flag(args, "migrate")
-  let config = session_config.load()
+  let table = config.get_string("session.table")
 
-  gen_session_table.run(database, config.table, db.pool_driver(pool))
+  gen_session_table.run(database, table, db.pool_driver(pool))
 
   case should_migrate {
     True -> run_migrate.run(pool, database)

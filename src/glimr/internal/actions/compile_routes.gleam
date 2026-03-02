@@ -10,10 +10,10 @@
 import gleam/int
 import gleam/list
 import gleam/string
-import glimr/config/route_group.{type RouteGroupConfig}
 import glimr/console/console
 import glimr/routing/annotation_parser
 import glimr/routing/compiler
+import glimr/routing/route_group.{type RouteGroupConfig}
 import simplifile
 
 // ------------------------------------------------------------- Public Functions
