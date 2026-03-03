@@ -3,9 +3,8 @@ import data/@{{ connection }}/models/@{{ model }}/gen/@{{ model }}
 import gleam/int
 import gleam/option
 import gleam/result
-import glimr/http/kernel.{type Next}
+import glimr/http/kernel.{type Next, type Request, type Response}
 import glimr_auth/auth
-import wisp.{type Request, type Response}
 
 pub const session_key = "@{{ session_key }}"
 

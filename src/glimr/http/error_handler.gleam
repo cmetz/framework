@@ -11,8 +11,8 @@
 ////
 
 import gleam/json
+import glimr/http/kernel.{type Response}
 import glimr/response/response.{type ResponseFormat}
-import wisp.{type Response}
 
 // ------------------------------------------------------------- Public Functions
 

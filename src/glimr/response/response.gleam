@@ -13,8 +13,9 @@ import gleam/http
 import gleam/int
 import gleam/json.{type Json}
 import gleam/string
+import glimr/http/kernel.{type Response}
 import simplifile
-import wisp.{type Response}
+import wisp
 
 // ------------------------------------------------------------- Public Consts
 

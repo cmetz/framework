@@ -7,7 +7,7 @@ import glimr/routing/compiler
 
 // Standard imports for test sources
 const standard_imports = "
-import wisp.{type Request}
+import glimr/http/kernel.{type Request}
 import app/http/context/ctx.{type Context}
 "
 
@@ -125,7 +125,7 @@ pub fn show(_req: Request, _ctx: Context) {
   |> should.be_true
 
   result.routes_code
-  |> string.contains("wisp.redirect(\"/new\")")
+  |> string.contains("redirect.to(\"/new\")")
   |> should.be_true
 }
 
@@ -148,7 +148,7 @@ pub fn show(_req: Request, _ctx: Context) {
   |> should.be_true
 
   result.routes_code
-  |> string.contains("wisp.permanent_redirect(\"/new-path\")")
+  |> string.contains("redirect.permanent(\"/new-path\")")
   |> should.be_true
 }
 

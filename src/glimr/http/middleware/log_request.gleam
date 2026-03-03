@@ -8,8 +8,8 @@
 //// handler serves it.
 ////
 
-import glimr/http/kernel.{type Next}
-import wisp.{type Request, type Response}
+import glimr/http/kernel.{type Next, type Request, type Response}
+import wisp
 
 // ------------------------------------------------------------- Public Functions
 

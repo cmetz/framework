@@ -1,6 +1,6 @@
 import app/http/context/ctx.{type Context}
 import glimr/forms/validator.{type FormData, type Rule}
-import wisp.{type Request, type Response}
+import glimr/http/kernel.{type Request, type Response}
 
 // docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#form-validation
 

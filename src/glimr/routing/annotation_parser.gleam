@@ -1,8 +1,12 @@
 //// Annotation Parser
 ////
-//// Parses route annotations from controller files. Extracts
-//// HTTP method routes, middleware, and redirects from doc
-//// comments preceding handler functions.
+//// Controller files define routes via doc comment annotations
+//// like `/// @get "/users"` above handler functions. This
+//// parser reads those annotations and produces structured data
+//// the route compiler uses to generate dispatch code. Keeping
+//// route definitions as annotations means developers see the
+//// URL right next to the handler — no separate routes file to
+//// keep in sync.
 
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -11,17 +15,21 @@ import gleam/string
 
 // ------------------------------------------------------------- Public Types
 
-/// Represents a function parameter with its name and type. This
-/// is used to track handler signature for flexible parameter
-/// ordering.
+/// The route compiler needs to know each handler's parameter
+/// names and types to wire up the right arguments — a `Request`
+/// gets the HTTP request, a `Context` gets the app context, and
+/// anything else maps to a route param like `:id`. Tracking
+/// both lets developers put parameters in any order they like.
 ///
 pub type FunctionParam {
   FunctionParam(name: String, param_type: String)
 }
 
-/// Represents a parsed route from controller annotations.
-/// Contains method, path, handler function name, middleware,
-/// optional validator, and optional redirect configuration.
+/// A route can be either a real handler (ParsedRoute) or a
+/// redirect (ParsedRedirect). The route compiler turns these
+/// into match arms in the generated dispatch function —
+/// handlers call the controller function, while redirects emit
+/// a 303/308 response pointing at the target path.
 ///
 pub type ParsedRoute {
   ParsedRoute(
@@ -35,15 +43,18 @@ pub type ParsedRoute {
   ParsedRedirect(from: String, to: String, status: Int)
 }
 
-/// Result of parsing a controller file. Contains group-level
-/// middleware that applies to all routes, the list of parsed
-/// routes, and import validation flags.
+/// Everything the route compiler needs from a single controller
+/// file — the routes themselves, group-level middleware, and
+/// import flags. The import checks let us catch missing
+/// `Request` or `Context` imports early with a helpful error
+/// instead of letting the Gleam compiler produce a confusing
+/// "unknown type" message.
 ///
 pub type ParseResult {
   ParseResult(
     group_middleware: List(String),
     routes: List(ParsedRoute),
-    has_wisp_request_import: Bool,
+    has_request_import: Bool,
     has_ctx_context_import: Bool,
     validator_data_imports: List(String),
   )
@@ -51,9 +62,11 @@ pub type ParseResult {
 
 // ------------------------------------------------------------- Private Types
 
-/// Annotations accumulate across multiple doc comment lines
-/// before a function declaration. This state tracks all the
-/// annotations seen so far until a pub fn completes the route.
+/// A route's annotations can span several doc comment lines —
+/// method, path, middleware, validator, redirects — and they
+/// all need to be collected before we hit the `pub fn` that
+/// ties them together. This state bag accumulates everything
+/// until the function declaration finalizes it.
 ///
 type AnnotationState {
   AnnotationState(
@@ -67,21 +80,23 @@ type AnnotationState {
 
 // ------------------------------------------------------------- Public Functions
 
-/// Parses a controller file for route annotations. Extracts
-/// group middleware from file-level comments and routes from
-/// doc comments preceding handler functions.
+/// The main entry point — takes the raw source of a controller
+/// file and returns everything the route compiler needs to
+/// generate dispatch code. Group middleware comes from
+/// file-level comments, individual routes from the doc comments
+/// above each handler function.
 ///
 pub fn parse(content: String) -> ParseResult {
   let group_middleware = extract_group_middleware(content)
   let routes = extract_routes(content, group_middleware)
-  let has_wisp_request_import = check_wisp_request_import(content)
+  let has_request_import = check_request_import(content)
   let has_ctx_context_import = check_ctx_context_import(content)
   let validator_data_imports = extract_validator_data_imports(content)
 
   ParseResult(
     group_middleware:,
     routes:,
-    has_wisp_request_import:,
+    has_request_import:,
     has_ctx_context_import:,
     validator_data_imports:,
   )
@@ -89,9 +104,12 @@ pub fn parse(content: String) -> ParseResult {
 
 // ------------------------------------------------------------- Private Functions
 
-/// Group middleware applies to all routes in a controller. This
-/// allows common authentication or logging middleware to be
-/// declared once at the file level rather than per-route.
+/// If every route in a controller needs auth middleware,
+/// annotating each one individually is tedious and error-prone
+/// — miss one and you've got an unprotected endpoint. Group
+/// middleware declared at the file level applies to everything,
+/// so `// @group_middleware "auth"` at the top covers all
+/// routes automatically.
 ///
 fn extract_group_middleware(content: String) -> List(String) {
   content
@@ -110,10 +128,10 @@ fn extract_group_middleware(content: String) -> List(String) {
   })
 }
 
-/// Routes are defined via doc comments before handler
-/// functions. This convention keeps route metadata close to the
-/// handler code while allowing compile-time generation of
-/// dispatch code.
+/// Splits the file into lines and kicks off the recursive
+/// line-by-line parser. Group middleware is passed through so
+/// it can be merged with per-route middleware when each route
+/// is finalized.
 ///
 fn extract_routes(
   content: String,
@@ -123,9 +141,11 @@ fn extract_routes(
   parse_lines(lines, group_middleware, None, [])
 }
 
-/// Annotation values are quoted to allow paths with spaces or
-/// special characters. The quotes must be properly matched for
-/// the annotation to be considered valid.
+/// Route paths like `"/users/:id"` are quoted in annotations so
+/// they can contain special characters without ambiguity.
+/// Malformed quotes (missing closing quote) silently fail as
+/// Error(Nil), which the caller treats as "no annotation found"
+/// — better than crashing on a partially-typed line.
 ///
 fn extract_quoted_arg(line: String, prefix: String) -> Result(String, Nil) {
   let after_prefix = string.drop_start(line, string.length(prefix))
@@ -142,10 +162,11 @@ fn extract_quoted_arg(line: String, prefix: String) -> Result(String, Nil) {
   }
 }
 
-/// Annotations can span multiple doc comment lines before the
-/// function declaration. State accumulates until we hit a pub
-/// fn, at which point we create the route and reset for the
-/// next.
+/// Walks through lines one at a time, building up annotation
+/// state when we see `///` lines and finalizing a route when we
+/// hit a `pub fn`. Non-comment, non-function lines reset the
+/// state so stray annotations don't leak into the wrong
+/// handler.
 ///
 fn parse_lines(
   lines: List(String),
@@ -218,9 +239,11 @@ fn parse_lines(
   }
 }
 
-/// Function signatures in Gleam can span multiple lines when
-/// there are many parameters. We need the complete signature to
-/// extract all parameter names and types for validation.
+/// Gleam function signatures can wrap across multiple lines
+/// when there are many parameters. We need the full thing to
+/// extract parameter names and types, so this keeps appending
+/// lines until it finds the opening `{` that marks the start of
+/// the function body.
 ///
 fn collect_signature(
   current_line: String,
@@ -241,9 +264,11 @@ fn collect_signature(
   }
 }
 
-/// Each annotation type (@get, @middleware, etc) has its own
-/// parser. We try each parser in sequence and use the first
-/// that succeeds, preserving existing state if none match.
+/// A doc comment line might be `@get "/users"`, `@middleware
+/// "auth"`, `@validator "login"`, or just regular prose. We try
+/// each annotation parser in sequence and take the first match
+/// — if none match, the line is ignored and the existing state
+/// carries through unchanged.
 ///
 fn parse_annotation_line(
   line: String,
@@ -258,10 +283,11 @@ fn parse_annotation_line(
   |> result.unwrap(state)
 }
 
-/// Route methods like @get, @post define which HTTP verb
-/// handles the route. The method is required for a valid route
-/// annotation and determines how the route matches incoming
-/// requests.
+/// Checks if the line is a method annotation like `@get
+/// "/users"` or `@post "/login"`. All standard HTTP methods are
+/// supported. The method and path are both required — without
+/// them we can't generate a route match arm, so the annotation
+/// is silently skipped.
 ///
 fn try_parse_method(
   content: String,
@@ -282,9 +308,10 @@ fn try_parse_method(
   })
 }
 
-/// Route-level middleware allows specific routes to have
-/// additional processing like rate limiting or caching that
-/// doesn't apply to all routes in the controller.
+/// Sometimes only one or two routes in a controller need extra
+/// middleware — rate limiting on a login endpoint, or caching
+/// on a public page. Per-route `@middleware` lets you add those
+/// without affecting every other handler in the file.
 ///
 fn try_parse_middleware(
   content: String,
@@ -300,9 +327,12 @@ fn try_parse_middleware(
   }
 }
 
-/// Validators handle form data parsing and validation before
-/// the handler runs. Associating a validator with a route
-/// generates the validation call in the compiled dispatcher.
+/// Attaching a `@validator` to a route tells the compiled
+/// dispatcher to parse and validate form data before the
+/// handler runs. The handler then receives typed, validated
+/// data instead of raw form values — so a login handler gets
+/// `LoginData` with guaranteed non-empty fields rather than
+/// digging through key-value pairs.
 ///
 fn try_parse_validator(
   content: String,
@@ -316,9 +346,11 @@ fn try_parse_validator(
   }
 }
 
-/// Redirects allow old URLs to point to new handlers without
-/// duplicating route logic. Permanent redirects (308) tell
-/// browsers to cache the redirect, while temporary (303) don't.
+/// When you rename a URL — say `/settings` becomes
+/// `/account/settings` — old bookmarks and search engine links
+/// break. `@redirect_permanent` emits a 308 so browsers cache
+/// it forever, while `@redirect` uses 303 for temporary moves
+/// that shouldn't be cached.
 ///
 fn try_parse_redirect(
   content: String,
@@ -345,9 +377,9 @@ fn try_parse_redirect(
   }
 }
 
-/// The function name links annotations to their handler in the
-/// generated dispatch code. We strip everything except the
-/// identifier between `pub fn` and the opening paren.
+/// The generated dispatch code calls handlers by name, so we
+/// need to pull the function name from `pub fn index(` →
+/// `"index"`. Everything between `pub fn ` and `(` is the name.
 ///
 fn extract_fn_name(line: String) -> String {
   let after_pub_fn = string.drop_start(line, 7)
@@ -357,9 +389,11 @@ fn extract_fn_name(line: String) -> String {
   }
 }
 
-/// Handler parameters determine what arguments the compiler
-/// passes when calling the function. We need both names (for
-/// route params) and types (for Request/Context/Data matching).
+/// The route compiler needs to know what arguments to pass to
+/// each handler — a `Request` param gets the HTTP request,
+/// `Context` gets the app context, and `Data` gets validated
+/// form data. Parsing the full signature here lets developers
+/// put parameters in any order they want.
 ///
 fn extract_fn_params(signature: String) -> List(FunctionParam) {
   // Extract content between first ( and last ) before ->
@@ -373,9 +407,10 @@ fn extract_fn_params(signature: String) -> List(FunctionParam) {
   }
 }
 
-/// Types like `Option(String)` contain parentheses that aren't
-/// parameter delimiters. Tracking depth ensures we find the
-/// actual closing paren of the function signature.
+/// A naive "split on `)` " would break on types like
+/// `Option(String)` because of the nested parens. Tracking
+/// depth ensures we find the actual closing paren of the
+/// function signature, not one inside a type annotation.
 ///
 fn extract_params_string(s: String, depth: Int, acc: String) -> String {
   case string.pop_grapheme(s) {
@@ -391,9 +426,10 @@ fn extract_params_string(s: String, depth: Int, acc: String) -> String {
   }
 }
 
-/// After extracting the raw parameter string, we need to split
-/// it into individual parameters while respecting commas inside
-/// generic types like `Dict(String, Int)`.
+/// Takes the raw text between the outer parentheses and
+/// produces a list of typed parameters. Empty strings get
+/// filtered out so trailing commas or whitespace-only segments
+/// don't produce phantom parameters.
 ///
 fn parse_params_string(params_str: String) -> List(FunctionParam) {
   split_params(params_str, 0, "", [])
@@ -406,9 +442,10 @@ fn parse_params_string(params_str: String) -> List(FunctionParam) {
   })
 }
 
-/// Generic types contain commas that aren't parameter
-/// separators. Tracking parenthesis depth ensures we only split
-/// on commas at the top level of the parameter list.
+/// Same depth-tracking trick as extract_params_string but for
+/// commas — `Dict(String, Int)` has a comma that isn't a
+/// parameter separator. We only split on commas at depth 0 so
+/// generic types stay intact.
 ///
 fn split_params(
   s: String,
@@ -430,9 +467,10 @@ fn split_params(
   }
 }
 
-/// Parameters may have type annotations or be untyped. Both the
-/// name and type are needed for the compiler to determine how
-/// to pass arguments (Request vs Context vs route params).
+/// Gleam parameters can be `name: Type` or just `name` without
+/// a type annotation. We handle both — typed params let the
+/// route compiler match on `Request`, `Context`, or `Data`,
+/// while untyped ones are treated as route params by default.
 ///
 fn parse_single_param(param: String) -> Result(FunctionParam, Nil) {
   case string.split_once(param, ":") {
@@ -452,10 +490,11 @@ fn parse_single_param(param: String) -> Result(FunctionParam, Nil) {
   }
 }
 
-/// Once we hit a pub fn, we have all annotations for that
-/// route. This combines group and route middleware, creates the
-/// main route, and generates any redirect routes pointing to
-/// it.
+/// When we finally hit the `pub fn`, all the annotations above
+/// it are ready to be assembled into a route. Group middleware
+/// goes first (so auth runs before route-specific middleware
+/// like rate limiting), then we generate redirect routes that
+/// point at this handler's path.
 ///
 fn create_routes_from_state(
   state: AnnotationState,
@@ -493,9 +532,10 @@ fn create_routes_from_state(
   }
 }
 
-/// File paths from glob need to be converted to module paths
-/// for generating import statements. The src/ prefix and .gleam
-/// extension aren't part of the Gleam module path.
+/// Glob gives us filesystem paths like
+/// `src/app/controllers/users.gleam` but Gleam imports use
+/// module paths like `app/controllers/users`. This strips the
+/// `src/` prefix and `.gleam` extension to bridge the gap.
 ///
 pub fn module_from_path(path: String) -> Result(String, Nil) {
   path
@@ -504,9 +544,11 @@ pub fn module_from_path(path: String) -> Result(String, Nil) {
   |> result.map(fn(parts) { parts.1 })
 }
 
-/// Types can be imported with or without the `type` keyword.
-/// Both `import mod.{type Foo}` and `import mod.{Foo}` make the
-/// type available, so we need to check for both patterns.
+/// Gleam lets you import types with or without the `type`
+/// keyword — both `import mod.{type Foo}` and `import
+/// mod.{Foo}` work. We check for both patterns so the import
+/// detection doesn't give false negatives when developers use
+/// either style.
 ///
 fn import_contains_type(line: String, type_name: String) -> Bool {
   case string.split_once(line, "{") {
@@ -525,11 +567,13 @@ fn import_contains_type(line: String, type_name: String) -> Bool {
   }
 }
 
-/// Handlers can use `Request` as a type if it's imported from
-/// wisp. Without the import, the compiler would fail with a
-/// confusing error, so we validate this early for better DX.
+/// If a handler has a `Request` parameter but the controller
+/// didn't import it from kernel, the Gleam compiler would
+/// produce a confusing "unknown type" error pointing at
+/// generated code. Catching it here lets us show a helpful
+/// message pointing at the actual controller file.
 ///
-fn check_wisp_request_import(content: String) -> Bool {
+fn check_request_import(content: String) -> Bool {
   content
   |> string.split("\n")
   |> list.any(fn(line) {
@@ -537,16 +581,17 @@ fn check_wisp_request_import(content: String) -> Bool {
     case string.starts_with(trimmed, "//") {
       True -> False
       False ->
-        string.starts_with(trimmed, "import wisp.{")
+        string.starts_with(trimmed, "import glimr/http/kernel.{")
         && import_contains_type(trimmed, "Request")
     }
   })
 }
 
-/// Handlers with validators can use `Data` as a type if they
-/// import it from the validator module. We track which
-/// validators have Data imported to validate handler
-/// parameters.
+/// When a handler uses `@validator "login"`, its `Data`
+/// parameter type comes from the validator module. We need to
+/// know which validator modules have `Data` imported so the
+/// route compiler can generate the right import — and so we can
+/// warn if the import is missing.
 ///
 fn extract_validator_data_imports(content: String) -> List(String) {
   content
@@ -577,10 +622,11 @@ fn extract_validator_data_imports(content: String) -> List(String) {
   })
 }
 
-/// Handlers can use `Context` as a type if it's imported from
-/// the ctx module. Without the import, the compiler would fail
-/// with a confusing error, so we validate this early for better
-/// DX.
+/// Same idea as the Request import check — if a handler takes a
+/// `Context` parameter but the controller didn't import it from
+/// ctx, we want to catch it early with a clear message rather
+/// than letting the Gleam compiler blame the generated dispatch
+/// code.
 ///
 fn check_ctx_context_import(content: String) -> Bool {
   content

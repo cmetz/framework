@@ -16,14 +16,13 @@ import gleam/list
 import gleam/regexp
 import gleam/result
 import gleam/string
-import glimr/forms/form
+import glimr/forms/form.{type UploadedFile}
+import glimr/http/kernel.{type Request, type Response}
 import glimr/response/redirect
 import glimr/response/response.{type ResponseFormat, HTML, JSON}
 import glimr/session/session.{type Session}
 import simplifile
-import wisp.{
-  type FormData as WispFormData, type Request, type Response, type UploadedFile,
-}
+import wisp.{type FormData as WispFormData}
 
 // ------------------------------------------------------------- Public Types
 

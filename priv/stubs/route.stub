@@ -1,7 +1,7 @@
-import wisp
+import glimr/response/response
 
 pub fn routes(path, _method, _req, _ctx) {
   case path {
-    _ -> wisp.not_found()
+    _ -> response.not_found()
   }
 }

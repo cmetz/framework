@@ -22,9 +22,10 @@ import gleam/option
 import gleam/otp/actor
 import gleam/string
 import glimr/config/config
+import glimr/http/kernel.{type Request, type Response}
 import glimr/session/cookie_store
 import glimr/session/store
-import wisp.{type Request, type Response}
+import wisp
 
 // ------------------------------------------------------------- Public Types
 

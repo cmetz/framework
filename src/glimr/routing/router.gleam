@@ -9,9 +9,9 @@ import gleam/http.{type Method}
 import gleam/http/response
 import gleam/list
 import gleam/string
-import glimr/http/kernel.{type MiddlewareGroup}
+import glimr/http/kernel.{type MiddlewareGroup, type Request, type Response}
 import glimr/routing/route_group
-import wisp.{type Request, type Response}
+import wisp
 
 /// Groups routes together with a shared middleware group and
 /// handler function. Routes use pattern matching for type-safe

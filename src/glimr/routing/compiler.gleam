@@ -142,6 +142,14 @@ pub fn write_compiled_file(
     False -> ""
   }
 
+  let redirect_import = case
+    string.contains(compile_result.routes_code, "redirect.to(")
+    || string.contains(compile_result.routes_code, "redirect.permanent(")
+  {
+    True -> "\nimport glimr/response/redirect"
+    False -> ""
+  }
+
   // Middleware and validators need req/ctx even if handlers don't use them directly
   let needs_req =
     compile_result.uses_req
@@ -182,6 +190,7 @@ pub fn write_compiled_file(
     <> imports_str
     <> http_import
     <> middleware_import
+    <> redirect_import
     <> "\nimport glimr/response/response"
     <> "\n\npub fn routes("
     <> fn_args
@@ -729,14 +738,14 @@ fn validate_type_imports(
             let has_unqualified_request =
               list.any(params, fn(p) { p.param_type == "Request" })
             let request_error = case
-              has_unqualified_request && !result.has_wisp_request_import
+              has_unqualified_request && !result.has_request_import
             {
               True ->
                 option.Some(#(
                   path,
                   alias <> "." <> handler,
-                  "Request type requires import: `import wisp.{type Request}`\n"
-                    <> "Or use fully qualified type: `req: wisp.Request`",
+                  "Request type requires import: `import glimr/http/kernel.{type Request}`\n"
+                    <> "Or use fully qualified type: `req: kernel.Request`",
                 ))
               False -> option.None
             }
@@ -1195,8 +1204,8 @@ fn generate_method_cases(routes: List(ParsedRoute)) -> String {
   case first {
     Ok(ParsedRedirect(to:, status:, ..)) -> {
       let redirect_fn = case status {
-        308 -> "wisp.permanent_redirect"
-        _ -> "wisp.redirect"
+        308 -> "redirect.permanent"
+        _ -> "redirect.to"
       }
       "      " <> redirect_fn <> "(\"" <> to <> "\")"
     }
@@ -1379,10 +1388,10 @@ fn param_to_arg(
 
 /// Checks if a param is the Request type. Identifies handler
 /// params that should receive the request object. Matches type
-/// names: Request, wisp.Request.
+/// names: Request, kernel.Request.
 ///
 fn is_request_param(param: FunctionParam) -> Bool {
-  param.param_type == "Request" || param.param_type == "wisp.Request"
+  param.param_type == "Request" || param.param_type == "kernel.Request"
 }
 
 /// Checks if a param is the Context type. Identifies handler

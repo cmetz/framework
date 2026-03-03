@@ -13,7 +13,17 @@
 
 import gleam/list
 import gleam/result
-import wisp.{type FormData, type UploadedFile}
+import wisp.{type FormData}
+
+// ------------------------------------------------------------- Public Types
+
+/// Re-exported from wisp so controllers and services can
+/// reference uploaded files without importing wisp directly. If
+/// we ever swap the underlying HTTP library, only this alias
+/// changes — not every file that handles uploads.
+///
+pub type UploadedFile =
+  wisp.UploadedFile
 
 // ------------------------------------------------------------- Public Functions
 

@@ -6,7 +6,8 @@
 
 import gleam/list
 import gleam/string
-import wisp.{type Request, type Response}
+import glimr/http/kernel.{type Request, type Response}
+import wisp
 
 // ------------------------------------------------------------- Public Functions
 
