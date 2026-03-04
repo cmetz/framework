@@ -145,8 +145,7 @@ fn group_routes_by_prefix(
               annotation_parser.ParseResult(
                 group_middleware: parse_result.group_middleware,
                 routes: matching_routes,
-                has_request_import: parse_result.has_request_import,
-                has_ctx_context_import: parse_result.has_ctx_context_import,
+                has_context_import: parse_result.has_context_import,
                 validator_data_imports: parse_result.validator_data_imports,
               ),
             ))

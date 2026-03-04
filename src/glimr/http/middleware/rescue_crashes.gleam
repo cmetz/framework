@@ -9,8 +9,9 @@
 //// of a stack trace.
 ////
 
+import glimr/http/context.{type Context}
 import glimr/http/fail
-import glimr/http/kernel.{type Next, type Request, type Response}
+import glimr/http/http.{type Response}
 import glimr/response/response
 import wisp
 
@@ -25,10 +26,10 @@ import wisp
 /// rescue_crashes first and become 500s, so users never see raw
 /// crash output regardless of what goes wrong.
 ///
-pub fn run(req: Request, ctx: context, next: Next(context)) -> Response {
+pub fn run(ctx: Context(app), next: fn(Context(app)) -> Response) -> Response {
   use <- wisp.rescue_crashes
 
-  case fail.rescue(fn() { next(req, ctx) }) {
+  case fail.rescue(fn() { next(ctx) }) {
     fail.Ok(response) -> response
     fail.Fail(status) -> response.empty(status)
   }

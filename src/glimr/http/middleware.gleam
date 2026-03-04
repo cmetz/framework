@@ -1,70 +1,60 @@
 //// Middleware Helper
 ////
-//// Utility for applying multiple middleware functions in
-//// sequence. Middleware are applied in order, with each having
-//// access to the request and context, and ability to call the
-//// next middleware in the chain.
+//// Sometimes a single route needs extra middleware that the
+//// rest of its group doesn't — auth checks on an admin page,
+//// rate limiting on a login endpoint. Rather than creating a
+//// whole new route group for one handler, this module lets you
+//// apply a list of middleware inline with `use`.
 
-import glimr/http/kernel.{type Middleware, type Next}
-import wisp.{type Request, type Response}
+import glimr/http/context.{type Context}
+import glimr/http/http.{type Response}
+import glimr/http/kernel.{type Middleware}
 
 // ------------------------------------------------------------- Public Functions
 
-/// Applies a list of middleware functions in sequence to a
-/// request. Each middleware receives the request, context, and
-/// a 'next' function to continue the chain. Middleware can
-/// modify both the request and context, with changes flowing
-/// through to subsequent middleware and the final handler.
-///
-/// Middleware execute in order: [first, second, third] → first
-/// wraps second wraps third.
-///
-/// This is useful when you want to apply multiple middleware to
-/// a specific route without adding them to the route group's
-/// global middleware stack.
+/// Wraps a handler in multiple middleware without needing a
+/// route group. Middleware execute in list order — [auth,
+/// rate_limit] means auth runs first, then rate_limit, then
+/// your handler. Context modifications flow through the chain
+/// so auth can add user info that the handler sees.
 ///
 /// *Example:*
 ///
 /// ```gleam
 /// // admin_controller.gleam
-/// pub fn show(req: Request, ctx: Context) -> Response {
-///   use req, ctx <- middleware.apply([auth, admin_check], req, ctx)
+/// pub fn show(ctx: Context(App)) -> Response {
+///   use ctx <- middleware.apply([auth, admin_check], ctx)
 ///
 ///   // handle the rest of your controller logic
 /// }
 /// ```
 ///
 pub fn apply(
-  middleware_list: List(Middleware(context)),
-  req: Request,
-  ctx: context,
-  next: Next(context),
+  middleware_list: List(Middleware(Context(app))),
+  ctx: Context(app),
+  next: fn(Context(app)) -> Response,
 ) -> Response {
-  do_apply(middleware_list, req, ctx, next)
+  do_apply(middleware_list, ctx, next)
 }
 
 // ------------------------------------------------------------- Private Functions
 
-/// Recursively applies middleware from the list. When the list
-/// is empty, calls the final handler with the (potentially
-/// modified) request and context. Otherwise, calls the first
-/// middleware and continues with the rest of the list,
-/// threading both request and context modifications through the
-/// chain.
+/// The recursion peels off one middleware at a time, passing
+/// the rest of the chain as the `next` callback. When the list
+/// is empty we've reached the actual handler. This nesting
+/// means each middleware can run code both before and after the
+/// handler — useful for timing, logging, or cleanup.
 ///
 fn do_apply(
-  middleware_list: List(Middleware(context)),
-  req: Request,
-  ctx: context,
-  next: fn(Request, context) -> Response,
+  middleware_list: List(Middleware(Context(app))),
+  ctx: Context(app),
+  next: fn(Context(app)) -> Response,
 ) -> Response {
   case middleware_list {
-    [] -> next(req, ctx)
+    [] -> next(ctx)
 
     [first, ..rest] -> {
-      first(req, ctx, fn(updated_req, updated_ctx) {
-        do_apply(rest, updated_req, updated_ctx, next)
-      })
+      first(ctx, fn(updated_ctx) { do_apply(rest, updated_ctx, next) })
     }
   }
 }

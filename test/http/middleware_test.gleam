@@ -2,12 +2,13 @@ import gleam/http
 import gleam/http/request
 import gleam/option.{type Option, None, Some}
 import gleeunit/should
+import glimr/http/context.{type Context, Context}
 import glimr/http/middleware
 import glimr/response/response
 import wisp
 
-pub type TestContext {
-  TestContext(value: String, user: Option(String))
+pub type TestApp {
+  TestApp(value: String, user: Option(String))
 }
 
 @external(erlang, "erlang", "make_ref")
@@ -24,10 +25,9 @@ pub fn make_request() -> wisp.Request {
 
 pub fn apply_no_middleware_test() {
   let req = make_request()
-  let ctx = TestContext("test", None)
+  let ctx = context.new(req, TestApp("test", None))
 
-  let response =
-    middleware.apply([], req, ctx, fn(_req, _ctx) { response.empty(200) })
+  let response = middleware.apply([], ctx, fn(_ctx) { response.empty(200) })
 
   response.status
   |> should.equal(200)
@@ -35,13 +35,13 @@ pub fn apply_no_middleware_test() {
 
 pub fn apply_no_middleware_calls_handler_test() {
   let req = make_request()
-  let ctx = TestContext("test", None)
+  let ctx = context.new(req, TestApp("test", None))
 
   // Handler should be called directly
   let response =
-    middleware.apply([], req, ctx, fn(req, _ctz) {
+    middleware.apply([], ctx, fn(ctx: Context(TestApp)) {
       // Verify request is passed through
-      case req.method {
+      case ctx.req.method {
         http.Get -> response.empty(200)
         _ -> response.empty(500)
       }
@@ -55,17 +55,15 @@ pub fn apply_no_middleware_calls_handler_test() {
 
 pub fn apply_single_middleware_test() {
   let req = make_request()
-  let ctx = TestContext("test", None)
+  let ctx = context.new(req, TestApp("test", None))
 
-  let middleware1 = fn(req, ctx, next) {
-    let resp = next(req, ctx)
+  let middleware1 = fn(ctx: Context(TestApp), next) {
+    let resp = next(ctx)
     wisp.set_header(resp, "x-middleware", "applied")
   }
 
   let response =
-    middleware.apply([middleware1], req, ctx, fn(_req, _ctx) {
-      response.empty(200)
-    })
+    middleware.apply([middleware1], ctx, fn(_ctx) { response.empty(200) })
 
   response.status
   |> should.equal(200)
@@ -76,17 +74,17 @@ pub fn apply_single_middleware_test() {
 
 pub fn apply_single_middleware_modifies_request_test() {
   let req = make_request()
-  let ctx = TestContext("test", None)
+  let ctx = context.new(req, TestApp("test", None))
 
-  let middleware1 = fn(req, ctx, next) {
+  let middleware1 = fn(ctx: Context(TestApp), next) {
     // Modify request before passing to next
-    let req = request.set_path(req, "/modified")
-    next(req, ctx)
+    let new_req = request.set_path(ctx.req, "/modified")
+    next(Context(..ctx, req: new_req))
   }
 
   let response =
-    middleware.apply([middleware1], req, ctx, fn(req, _ctx) {
-      let path = wisp.path_segments(req)
+    middleware.apply([middleware1], ctx, fn(ctx: Context(TestApp)) {
+      let path = wisp.path_segments(ctx.req)
       case path {
         ["modified"] -> response.empty(200)
         _ -> response.empty(500)
@@ -99,25 +97,23 @@ pub fn apply_single_middleware_modifies_request_test() {
 
 pub fn apply_single_middleware_accesses_context_test() {
   let req = make_request()
-  let ctx = TestContext("secret", None)
+  let ctx = context.new(req, TestApp("secret", None))
 
-  let middleware1 = fn(req, ctx, next) {
-    case ctx {
-      TestContext("secret", _) -> {
-        let resp = next(req, ctx)
+  let middleware1 = fn(ctx: Context(TestApp), next) {
+    case ctx.app {
+      TestApp("secret", _) -> {
+        let resp = next(ctx)
         wisp.set_header(resp, "x-auth", "valid")
       }
       _ -> {
-        let resp = next(req, ctx)
+        let resp = next(ctx)
         wisp.set_header(resp, "x-auth", "invalid")
       }
     }
   }
 
   let response =
-    middleware.apply([middleware1], req, ctx, fn(_req, _ctx) {
-      response.empty(200)
-    })
+    middleware.apply([middleware1], ctx, fn(_ctx) { response.empty(200) })
 
   response.headers
   |> should.equal([#("x-auth", "valid")])
@@ -127,20 +123,20 @@ pub fn apply_single_middleware_accesses_context_test() {
 
 pub fn apply_multiple_middleware_test() {
   let req = make_request()
-  let ctx = TestContext("test", None)
+  let ctx = context.new(req, TestApp("test", None))
 
-  let middleware1 = fn(req, ctx, next) {
-    let resp = next(req, ctx)
+  let middleware1 = fn(ctx: Context(TestApp), next) {
+    let resp = next(ctx)
     wisp.set_header(resp, "x-first", "1")
   }
 
-  let middleware2 = fn(req, ctx, next) {
-    let resp = next(req, ctx)
+  let middleware2 = fn(ctx: Context(TestApp), next) {
+    let resp = next(ctx)
     wisp.set_header(resp, "x-second", "2")
   }
 
   let response =
-    middleware.apply([middleware1, middleware2], req, ctx, fn(_req, _ctx) {
+    middleware.apply([middleware1, middleware2], ctx, fn(_ctx) {
       response.empty(200)
     })
 
@@ -165,32 +161,29 @@ pub fn apply_multiple_middleware_test() {
 
 pub fn apply_middleware_execution_order_test() {
   let req = make_request()
-  let ctx = TestContext("test", None)
+  let ctx = context.new(req, TestApp("test", None))
 
   // Middleware execute in order: first wraps second wraps third
   // So if they all set the same header, the outermost (first) has final say
-  let middleware1 = fn(req, ctx, next) {
-    let resp = next(req, ctx)
+  let middleware1 = fn(ctx: Context(TestApp), next) {
+    let resp = next(ctx)
     wisp.set_header(resp, "x-order", "first")
   }
 
-  let middleware2 = fn(req, ctx, next) {
-    let resp = next(req, ctx)
+  let middleware2 = fn(ctx: Context(TestApp), next) {
+    let resp = next(ctx)
     wisp.set_header(resp, "x-order", "second")
   }
 
-  let middleware3 = fn(req, ctx, next) {
-    let resp = next(req, ctx)
+  let middleware3 = fn(ctx: Context(TestApp), next) {
+    let resp = next(ctx)
     wisp.set_header(resp, "x-order", "third")
   }
 
   let response =
-    middleware.apply(
-      [middleware1, middleware2, middleware3],
-      req,
-      ctx,
-      fn(_req, _ctx) { response.empty(200) },
-    )
+    middleware.apply([middleware1, middleware2, middleware3], ctx, fn(_ctx) {
+      response.empty(200)
+    })
 
   // First middleware (outermost) has final say
   response.headers
@@ -199,30 +192,30 @@ pub fn apply_middleware_execution_order_test() {
 
 pub fn apply_middleware_chain_modifies_request_test() {
   let req = make_request()
-  let ctx = TestContext("test", None)
+  let ctx = context.new(req, TestApp("test", None))
 
-  let middleware1 = fn(req, ctx, next) {
+  let middleware1 = fn(ctx: Context(TestApp), next) {
     // First middleware sets path to /step1
-    let req = request.set_path(req, "/step1")
-    next(req, ctx)
+    let new_req = request.set_path(ctx.req, "/step1")
+    next(Context(..ctx, req: new_req))
   }
 
-  let middleware2 = fn(req, ctx, next) {
+  let middleware2 = fn(ctx: Context(TestApp), next) {
     // Second middleware should see /step1 and change to /step2
-    let path = wisp.path_segments(req)
+    let path = wisp.path_segments(ctx.req)
     case path {
       ["step1"] -> {
-        let req = request.set_path(req, "/step2")
-        next(req, ctx)
+        let new_req = request.set_path(ctx.req, "/step2")
+        next(Context(..ctx, req: new_req))
       }
-      _ -> next(req, ctx)
+      _ -> next(ctx)
     }
   }
 
   let response =
-    middleware.apply([middleware1, middleware2], req, ctx, fn(req, _ctx) {
+    middleware.apply([middleware1, middleware2], ctx, fn(ctx: Context(TestApp)) {
       // Handler should see final path
-      let path = wisp.path_segments(req)
+      let path = wisp.path_segments(ctx.req)
       case path {
         ["step2"] -> response.empty(200)
         _ -> response.empty(500)
@@ -237,18 +230,18 @@ pub fn apply_middleware_chain_modifies_request_test() {
 
 pub fn apply_middleware_can_short_circuit_test() {
   let req = make_request()
-  let ctx = TestContext("unauthorized", None)
+  let ctx = context.new(req, TestApp("unauthorized", None))
 
-  let auth_middleware = fn(req, ctx, next) {
-    case ctx {
-      TestContext("authorized", _) -> next(req, ctx)
+  let auth_middleware = fn(ctx: Context(TestApp), next) {
+    case ctx.app {
+      TestApp("authorized", _) -> next(ctx)
       // Short-circuit - don't call next
       _ -> response.empty(401)
     }
   }
 
   let response =
-    middleware.apply([auth_middleware], req, ctx, fn(_req, _ctx) {
+    middleware.apply([auth_middleware], ctx, fn(_ctx) {
       // This handler should never be called
       response.empty(200)
     })
@@ -259,21 +252,21 @@ pub fn apply_middleware_can_short_circuit_test() {
 
 pub fn apply_middleware_early_return_stops_chain_test() {
   let req = make_request()
-  let ctx = TestContext("test", None)
+  let ctx = context.new(req, TestApp("test", None))
 
-  let middleware1 = fn(_req, _ctx, _next) {
+  let middleware1 = fn(_ctx: Context(TestApp), _next) {
     // First middleware returns early without calling next
     response.empty(403)
   }
 
-  let middleware2 = fn(req, ctx, next) {
+  let middleware2 = fn(ctx: Context(TestApp), next) {
     // This should never be called
-    let resp = next(req, ctx)
+    let resp = next(ctx)
     wisp.set_header(resp, "x-unreachable", "true")
   }
 
   let response =
-    middleware.apply([middleware1, middleware2], req, ctx, fn(_req, _ctx) {
+    middleware.apply([middleware1, middleware2], ctx, fn(_ctx) {
       // Handler should never be called either
       response.empty(200)
     })
@@ -290,16 +283,16 @@ pub fn apply_middleware_early_return_stops_chain_test() {
 
 pub fn apply_middleware_modifies_response_body_test() {
   let req = make_request()
-  let ctx = TestContext("test", None)
+  let ctx = context.new(req, TestApp("test", None))
 
-  let middleware1 = fn(req, ctx, next) {
-    let resp = next(req, ctx)
+  let middleware1 = fn(ctx: Context(TestApp), next) {
+    let resp = next(ctx)
     // Modify response body
     wisp.html_body(resp, "<html>wrapped</html>")
   }
 
   let response =
-    middleware.apply([middleware1], req, ctx, fn(_req, _ctx) {
+    middleware.apply([middleware1], ctx, fn(_ctx) {
       wisp.html_response("original", 200)
     })
 
@@ -314,18 +307,16 @@ pub fn apply_middleware_modifies_response_body_test() {
 
 pub fn apply_middleware_modifies_status_code_test() {
   let req = make_request()
-  let ctx = TestContext("test", None)
+  let ctx = context.new(req, TestApp("test", None))
 
-  let middleware1 = fn(req, ctx, next) {
-    let _resp = next(req, ctx)
+  let middleware1 = fn(ctx: Context(TestApp), next) {
+    let _resp = next(ctx)
     // Change status code (create new response)
     response.empty(201)
   }
 
   let response =
-    middleware.apply([middleware1], req, ctx, fn(_req, _ctx) {
-      response.empty(200)
-    })
+    middleware.apply([middleware1], ctx, fn(_ctx) { response.empty(200) })
 
   response.status
   |> should.equal(201)
@@ -335,32 +326,29 @@ pub fn apply_middleware_modifies_status_code_test() {
 
 pub fn apply_middleware_realistic_auth_flow_test() {
   let req = make_request()
-  let ctx = TestContext("admin", None)
+  let ctx = context.new(req, TestApp("admin", None))
 
-  let auth_middleware = fn(req, ctx, next) {
-    case ctx {
-      TestContext("admin", _) -> {
+  let auth_middleware = fn(ctx: Context(TestApp), next) {
+    case ctx.app {
+      TestApp("admin", _) -> {
         // Add user info to response header
-        let resp = next(req, ctx)
+        let resp = next(ctx)
         wisp.set_header(resp, "x-user", "admin")
       }
       _ -> response.empty(401)
     }
   }
 
-  let logging_middleware = fn(req, ctx, next) {
+  let logging_middleware = fn(ctx: Context(TestApp), next) {
     // Log the request (in real app would use io)
-    let resp = next(req, ctx)
+    let resp = next(ctx)
     wisp.set_header(resp, "x-logged", "true")
   }
 
   let response =
-    middleware.apply(
-      [logging_middleware, auth_middleware],
-      req,
-      ctx,
-      fn(_req, _ctx) { response.empty(200) },
-    )
+    middleware.apply([logging_middleware, auth_middleware], ctx, fn(_ctx) {
+      response.empty(200)
+    })
 
   response.status
   |> should.equal(200)
@@ -382,18 +370,19 @@ pub fn apply_middleware_realistic_auth_flow_test() {
 
 pub fn apply_middleware_modifies_context_test() {
   let req = make_request()
-  let ctx = TestContext("test", None)
+  let ctx = context.new(req, TestApp("test", None))
 
-  let auth_middleware = fn(req, ctx, next) {
+  let auth_middleware = fn(ctx: Context(TestApp), next) {
     // Simulate authenticating a user and adding to context
-    let updated_ctx = TestContext(..ctx, user: Some("alice"))
-    next(req, updated_ctx)
+    let updated_ctx =
+      Context(..ctx, app: TestApp(..ctx.app, user: Some("alice")))
+    next(updated_ctx)
   }
 
   let response =
-    middleware.apply([auth_middleware], req, ctx, fn(_req, ctx) {
+    middleware.apply([auth_middleware], ctx, fn(ctx: Context(TestApp)) {
       // Handler should see the modified context
-      case ctx.user {
+      case ctx.app.user {
         Some(username) -> {
           let resp = response.empty(200)
           wisp.set_header(resp, "x-username", username)
@@ -415,20 +404,20 @@ pub fn apply_middleware_modifies_context_test() {
 
 pub fn apply_middleware_chain_modifies_context_test() {
   let req = make_request()
-  let ctx = TestContext("test", None)
+  let ctx = context.new(req, TestApp("test", None))
 
-  let auth_middleware = fn(req, ctx, next) {
+  let auth_middleware = fn(ctx: Context(TestApp), next) {
     // First middleware adds user to context
-    let updated_ctx = TestContext(..ctx, user: Some("bob"))
-    next(req, updated_ctx)
+    let updated_ctx = Context(..ctx, app: TestApp(..ctx.app, user: Some("bob")))
+    next(updated_ctx)
   }
 
-  let validation_middleware = fn(req, ctx: TestContext, next) {
+  let validation_middleware = fn(ctx: Context(TestApp), next) {
     // Second middleware can read the user added by first middleware
-    case ctx.user {
+    case ctx.app.user {
       Some("bob") -> {
         // User is valid, continue
-        next(req, ctx)
+        next(ctx)
       }
       _ -> response.empty(403)
     }
@@ -437,11 +426,10 @@ pub fn apply_middleware_chain_modifies_context_test() {
   let response =
     middleware.apply(
       [auth_middleware, validation_middleware],
-      req,
       ctx,
-      fn(_req, ctx) {
+      fn(ctx: Context(TestApp)) {
         // Handler should see the modified context from auth middleware
-        case ctx.user {
+        case ctx.app.user {
           Some(username) -> {
             let resp = response.empty(200)
             wisp.set_header(resp, "x-validated-user", username)

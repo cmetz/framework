@@ -9,7 +9,8 @@
 //// field.
 ////
 
-import glimr/http/kernel.{type Next, type Request, type Response}
+import glimr/http/context.{type Context, Context}
+import glimr/http/http.{type Response}
 import wisp
 
 // ------------------------------------------------------------- Public Functions
@@ -20,6 +21,6 @@ import wisp
 /// middleware and handler sees the intended method without
 /// needing to check the _method field themselves.
 ///
-pub fn run(req: Request, ctx: context, next: Next(context)) -> Response {
-  next(wisp.method_override(req), ctx)
+pub fn run(ctx: Context(app), next: fn(Context(app)) -> Response) -> Response {
+  next(Context(..ctx, req: wisp.method_override(ctx.req)))
 }

@@ -2,8 +2,8 @@ import gleam/http
 import gleam/http/request
 import wisp
 
-pub type TestContext {
-  TestContext(value: String)
+pub type TestApp {
+  TestApp(value: String)
 }
 
 @external(erlang, "erlang", "make_ref")

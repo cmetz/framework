@@ -1,10 +1,12 @@
-import app/http/context/ctx.{type Context}
-import glimr/http/kernel.{type Next, type Request, type Response}
+import app/app.{type App}
+import glimr/http/context.{type Context}
+import glimr/http/http.{type Response}
+import glimr/http/kernel.{type Next}
 
 // docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#middleware
 
-pub fn run(req: Request, ctx: Context, next: Next(Context)) -> Response {
+pub fn run(ctx: Context(App), next: Next(App)) -> Response {
   todo
 
-  next(req, ctx)
+  next(ctx)
 }

@@ -9,7 +9,8 @@
 //// centralized.
 ////
 
-import glimr/http/kernel.{type Next, type Request, type Response}
+import glimr/http/context.{type Context, Context}
+import glimr/http/http.{type Response}
 import wisp
 
 // ------------------------------------------------------------- Public Functions
@@ -21,8 +22,8 @@ import wisp
 /// other headers remain accurate from the original GET
 /// response.
 ///
-pub fn run(req: Request, ctx: context, next: Next(context)) -> Response {
-  use req <- wisp.handle_head(req)
+pub fn run(ctx: Context(app), next: fn(Context(app)) -> Response) -> Response {
+  use req <- wisp.handle_head(ctx.req)
 
-  next(req, ctx)
+  next(Context(..ctx, req: req))
 }

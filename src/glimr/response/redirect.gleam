@@ -6,7 +6,8 @@
 
 import gleam/list
 import gleam/string
-import glimr/http/kernel.{type Request, type Response}
+import glimr/http/context.{type Context}
+import glimr/http/http.{type Response}
 import wisp
 
 // ------------------------------------------------------------- Public Functions
@@ -46,12 +47,12 @@ pub fn permanent(path: String) -> Response {
 ///
 /// *Example:*
 /// ```gleam
-/// redirect.back(req.request)
+/// redirect.back(ctx)
 /// ```
 ///
-pub fn back(req: Request) -> Response {
+pub fn back(ctx: Context(app)) -> Response {
   let assert Ok(path) =
-    req.headers
+    ctx.req.headers
     |> list.key_find("referer")
 
   to(path)

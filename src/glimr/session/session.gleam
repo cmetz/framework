@@ -11,21 +11,12 @@
 ////
 
 import gleam/bit_array
-import gleam/crypto
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
-import gleam/http
-import gleam/http/cookie
-import gleam/http/request
-import gleam/http/response
-import gleam/option
 import gleam/otp/actor
 import gleam/string
-import glimr/config/config
-import glimr/http/kernel.{type Request, type Response}
 import glimr/session/cookie_store
-import glimr/session/store
-import wisp
+import glimr/session/store.{type SessionStore}
 
 // ------------------------------------------------------------- Public Types
 
@@ -247,97 +238,22 @@ pub fn regenerate(session: Session) -> Nil {
   }
 }
 
+/// Caches the given session store in persistent_term so the
+/// session middleware can access it on every request without
+/// threading it through function arguments. Call this once at
+/// boot after creating a store from any driver.
+///
+pub fn setup(session_store: SessionStore) -> Nil {
+  store.cache_store(session_store)
+}
+
 /// Cookie-based sessions avoid server-side storage entirely —
 /// the signed cookie is the store. This is ideal for small
 /// payloads under ~4KB where the simplicity of zero
-/// infrastructure outweighs the per-request bandwidth cost. The
-/// store is cached in persistent_term so middleware can access
-/// it without passing it through every function.
+/// infrastructure outweighs the per-request bandwidth cost.
 ///
-pub fn start_cookie() -> Session {
-  let session = cookie_store.create()
-  store.cache_store(session)
-
-  empty()
-}
-
-/// Starts a session for the current request. Reads the session
-/// cookie, loads data from the configured store, and provides a
-/// live session to the next handler. After the handler returns,
-/// persists changes and sets the cookie on the response.
-///
-/// Usage in kernel middleware:
-///
-/// ```gleam
-/// use req, session <- session.load(req)
-/// let ctx = Context(..ctx, session: session)
-/// router(req, ctx)
-/// ```
-///
-pub fn load(req: Request, next: fn(Request, Session) -> Response) -> Response {
-  let cookie_name = config.get_string("session.cookie")
-  let lifetime = config.get_int("session.lifetime")
-  let expire_on_close = config.get_bool("session.expire_on_close")
-
-  // Read or generate session ID
-  let #(session_id, is_new) = case
-    wisp.get_cookie(req, cookie_name, wisp.Signed)
-  {
-    Ok(id) -> #(id, False)
-    Error(_) -> #(generate_id(), True)
-  }
-
-  // Load existing data from store (empty for new sessions)
-  let #(data, flash) = case is_new {
-    True -> #(dict.new(), dict.new())
-    False -> store.load(session_id)
-  }
-
-  // Start session actor with loaded data
-  // Flash from store becomes readable this request, then cleared
-  let session = start(session_id, data, flash)
-
-  // Call the actual handler
-  let resp = next(req, session)
-
-  // Read final state and persist
-  let resp = case get_state(session) {
-    Ok(state) -> {
-      // Destroy old session if invalidated
-      case state.invalidated {
-        True -> store.destroy(session_id)
-        False -> Nil
-      }
-
-      // Save if dirty
-      case state.dirty {
-        True -> store.save(state.id, state.data, state.flash)
-        False -> Nil
-      }
-
-      // Probabilistic gc (2% chance)
-      maybe_gc()
-
-      // Set cookie with session value (ID for server stores, payload for cookie stores)
-      let value = store.cookie_value(state.id, state.data, state.flash)
-
-      set_session_cookie(
-        resp,
-        req,
-        cookie_name,
-        value,
-        lifetime,
-        expire_on_close,
-      )
-    }
-
-    Error(_) -> resp
-  }
-
-  // Stop the actor
-  stop(session)
-
-  resp
+pub fn cookie_store() -> SessionStore {
+  cookie_store.create()
 }
 
 // ------------------------------------------------------------- Internal Public Functions
@@ -507,53 +423,6 @@ fn handle_message(
   }
 }
 
-/// Sets the session cookie on the response. When
-/// expire_on_close is true, omits max_age so the cookie becomes
-/// a session cookie that the browser deletes when closed. When
-/// false, sets max_age to the configured lifetime.
-///
-fn set_session_cookie(
-  resp: Response,
-  req: Request,
-  name: String,
-  value: String,
-  lifetime: Int,
-  expire_on_close: Bool,
-) -> Response {
-  let scheme = case req.host {
-    "localhost" | "127.0.0.1" | "[::1]" if req.scheme == http.Http ->
-      case request.get_header(req, "x-forwarded-proto") {
-        Ok(_) -> http.Https
-        Error(_) -> http.Http
-      }
-    _ -> http.Https
-  }
-
-  let max_age = case expire_on_close {
-    True -> option.None
-    False -> option.Some(lifetime * 60)
-  }
-
-  let attributes =
-    cookie.Attributes(..cookie.defaults(scheme), max_age: max_age)
-  let signed_value = wisp.sign_message(req, <<value:utf8>>, crypto.Sha512)
-
-  response.set_cookie(resp, name, signed_value, attributes)
-}
-
-/// Expired sessions accumulate in the store over time but
-/// running GC on every request would add unnecessary latency. A
-/// 2% probability spreads the cleanup cost across requests so
-/// no single request pays the full price, while still ensuring
-/// stale entries are purged within a reasonable window.
-///
-fn maybe_gc() -> Nil {
-  case rand_uniform(100) {
-    n if n <= 2 -> store.gc()
-    _ -> Nil
-  }
-}
-
 // ------------------------------------------------------------- FFI Helpers
 
 /// Gleam has no built-in CSPRNG, so this wraps Erlang's
@@ -563,11 +432,3 @@ fn maybe_gc() -> Nil {
 ///
 @external(erlang, "crypto", "strong_rand_bytes")
 fn crypto_strong_random_bytes(n: Int) -> BitArray
-
-/// Gleam has no built-in random number generation, so this
-/// wraps Erlang's rand:uniform/1 via FFI. Only used for the
-/// probabilistic GC trigger — not for security-sensitive
-/// operations, which use crypto:strong_rand_bytes instead.
-///
-@external(erlang, "rand", "uniform")
-fn rand_uniform(n: Int) -> Int

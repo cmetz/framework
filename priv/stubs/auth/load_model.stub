@@ -1,21 +1,23 @@
-import app/http/context/ctx.{type Context}
+import app/app.{type App, App}
 import data/@{{ connection }}/models/@{{ model }}/gen/@{{ model }}
 import gleam/int
 import gleam/option
 import gleam/result
-import glimr/http/kernel.{type Next, type Request, type Response}
+import glimr/http/context.{type Context, Context}
+import glimr/http/http.{type Response}
+import glimr/http/kernel.{type Next}
 import glimr_auth/auth
 
 pub const session_key = "@{{ session_key }}"
 
-pub fn run(req: Request, ctx: Context, next: Next(Context)) -> Response {
+pub fn run(ctx: Context(App), next: Next(App)) -> Response {
   let @{{ model }} =
     auth.id(ctx.session, session_key)
     |> result.try(int.parse)
-    |> result.try(fn(id) { @{{ model }}.find(ctx.@{{ ctx_db_name }}, id) |> result.replace_error(Nil) })
+    |> result.try(fn(id) { @{{ model }}.find(ctx.app.@{{ ctx_db_name }}, id) |> result.replace_error(Nil) })
     |> option.from_result
 
-  let ctx = ctx.Context(..ctx, @{{ model }}: @{{ model }})
+  let ctx = Context(..ctx, app: App(..ctx.app, @{{ model }}: @{{ model }}))
 
-  next(req, ctx)
+  next(ctx)
 }

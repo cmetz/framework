@@ -2,19 +2,19 @@ import gleam/http
 import gleam/http/request
 import gleeunit/should
 import glimr/config/config
+import glimr/http/context.{type Context}
 import glimr/http/middleware
+import glimr/http/middleware/expects_html
+import glimr/http/middleware/expects_json
 import glimr/http/middleware/handle_head
 import glimr/http/middleware/log_request
 import glimr/http/middleware/method_override
 import glimr/http/middleware/rescue_crashes
 import glimr/http/middleware/serve_static
 import glimr/response/response
+import routing/helpers.{TestApp}
 import simplifile
 import wisp
-
-pub type TestContext {
-  TestContext(value: String)
-}
 
 const config_dir = "config"
 
@@ -50,14 +50,12 @@ fn make_request() -> wisp.Request {
 pub fn serve_static_conforms_to_middleware_type_test() {
   ensure_app_config()
   let req = make_request()
-  let ctx = TestContext("test")
+  let ctx = context.new(req, TestApp("test"))
 
-  let response =
-    middleware.apply([serve_static.run], req, ctx, fn(_req, _ctx) {
-      response.empty(200)
-    })
+  let resp =
+    middleware.apply([serve_static.run], ctx, fn(_ctx) { response.empty(200) })
 
-  response.status
+  resp.status
   |> should.equal(200)
 
   cleanup_app_config()
@@ -65,53 +63,69 @@ pub fn serve_static_conforms_to_middleware_type_test() {
 
 pub fn method_override_conforms_to_middleware_type_test() {
   let req = make_request()
-  let ctx = TestContext("test")
+  let ctx = context.new(req, TestApp("test"))
 
-  let response =
-    middleware.apply([method_override.run], req, ctx, fn(_req, _ctx) {
+  let resp =
+    middleware.apply([method_override.run], ctx, fn(_ctx) {
       response.empty(200)
     })
 
-  response.status
+  resp.status
   |> should.equal(200)
 }
 
 pub fn log_request_conforms_to_middleware_type_test() {
   let req = make_request()
-  let ctx = TestContext("test")
+  let ctx = context.new(req, TestApp("test"))
 
-  let response =
-    middleware.apply([log_request.run], req, ctx, fn(_req, _ctx) {
-      response.empty(200)
-    })
+  let resp =
+    middleware.apply([log_request.run], ctx, fn(_ctx) { response.empty(200) })
 
-  response.status
+  resp.status
   |> should.equal(200)
 }
 
 pub fn rescue_crashes_conforms_to_middleware_type_test() {
   let req = make_request()
-  let ctx = TestContext("test")
+  let ctx = context.new(req, TestApp("test"))
 
-  let response =
-    middleware.apply([rescue_crashes.run], req, ctx, fn(_req, _ctx) {
-      response.empty(200)
-    })
+  let resp =
+    middleware.apply([rescue_crashes.run], ctx, fn(_ctx) { response.empty(200) })
 
-  response.status
+  resp.status
+  |> should.equal(200)
+}
+
+pub fn expects_html_conforms_to_middleware_type_test() {
+  let req = make_request()
+  let ctx = context.new(req, TestApp("test"))
+
+  let resp =
+    middleware.apply([expects_html.run], ctx, fn(_ctx) { response.empty(200) })
+
+  resp.status
+  |> should.equal(200)
+}
+
+pub fn expects_json_conforms_to_middleware_type_test() {
+  let req = make_request()
+  let ctx = context.new(req, TestApp("test"))
+
+  let resp =
+    middleware.apply([expects_json.run], ctx, fn(_ctx) { response.empty(200) })
+
+  resp.status
   |> should.equal(200)
 }
 
 pub fn handle_head_conforms_to_middleware_type_test() {
   let req = make_request()
-  let ctx = TestContext("test")
+  let ctx = context.new(req, TestApp("test"))
 
-  let response =
-    middleware.apply([handle_head.run], req, ctx, fn(_req, _ctx) {
-      response.empty(200)
-    })
+  let resp =
+    middleware.apply([handle_head.run], ctx, fn(_ctx) { response.empty(200) })
 
-  response.status
+  resp.status
   |> should.equal(200)
 }
 
@@ -119,17 +133,21 @@ pub fn handle_head_conforms_to_middleware_type_test() {
 
 pub fn method_override_passes_context_through_test() {
   let req = make_request()
-  let ctx = TestContext("preserved")
+  let ctx = context.new(req, TestApp("preserved"))
 
-  let response =
-    middleware.apply([method_override.run], req, ctx, fn(_req, ctx) {
-      case ctx {
-        TestContext("preserved") -> response.empty(200)
-        _ -> response.empty(500)
-      }
-    })
+  let resp =
+    middleware.apply(
+      [method_override.run],
+      ctx,
+      fn(ctx: Context(helpers.TestApp)) {
+        case ctx.app {
+          TestApp("preserved") -> response.empty(200)
+          _ -> response.empty(500)
+        }
+      },
+    )
 
-  response.status
+  resp.status
   |> should.equal(200)
 }
 
@@ -137,18 +155,18 @@ pub fn log_request_passes_request_and_context_through_test() {
   let req =
     make_request()
     |> request.set_path("/test-path")
-  let ctx = TestContext("preserved")
+  let ctx = context.new(req, TestApp("preserved"))
 
-  let response =
-    middleware.apply([log_request.run], req, ctx, fn(req, ctx) {
-      let path = wisp.path_segments(req)
-      case path, ctx {
-        ["test-path"], TestContext("preserved") -> response.empty(200)
+  let resp =
+    middleware.apply([log_request.run], ctx, fn(ctx: Context(helpers.TestApp)) {
+      let path = wisp.path_segments(ctx.req)
+      case path, ctx.app {
+        ["test-path"], TestApp("preserved") -> response.empty(200)
         _, _ -> response.empty(500)
       }
     })
 
-  response.status
+  resp.status
   |> should.equal(200)
 }
 
@@ -156,18 +174,22 @@ pub fn rescue_crashes_passes_request_and_context_through_test() {
   let req =
     make_request()
     |> request.set_path("/safe")
-  let ctx = TestContext("preserved")
+  let ctx = context.new(req, TestApp("preserved"))
 
-  let response =
-    middleware.apply([rescue_crashes.run], req, ctx, fn(req, ctx) {
-      let path = wisp.path_segments(req)
-      case path, ctx {
-        ["safe"], TestContext("preserved") -> response.empty(200)
-        _, _ -> response.empty(500)
-      }
-    })
+  let resp =
+    middleware.apply(
+      [rescue_crashes.run],
+      ctx,
+      fn(ctx: Context(helpers.TestApp)) {
+        let path = wisp.path_segments(ctx.req)
+        case path, ctx.app {
+          ["safe"], TestApp("preserved") -> response.empty(200)
+          _, _ -> response.empty(500)
+        }
+      },
+    )
 
-  response.status
+  resp.status
   |> should.equal(200)
 }
 
@@ -178,14 +200,12 @@ pub fn serve_static_passes_through_for_non_static_requests_test() {
   let req =
     make_request()
     |> request.set_path("/users")
-  let ctx = TestContext("test")
+  let ctx = context.new(req, TestApp("test"))
 
-  let response =
-    middleware.apply([serve_static.run], req, ctx, fn(_req, _ctx) {
-      response.empty(200)
-    })
+  let resp =
+    middleware.apply([serve_static.run], ctx, fn(_ctx) { response.empty(200) })
 
-  response.status
+  resp.status
   |> should.equal(200)
 
   cleanup_app_config()
@@ -195,18 +215,18 @@ pub fn handle_head_converts_head_to_get_test() {
   let req =
     make_request()
     |> request.set_method(http.Head)
-  let ctx = TestContext("test")
+  let ctx = context.new(req, TestApp("test"))
 
-  let response =
-    middleware.apply([handle_head.run], req, ctx, fn(req, _ctx) {
+  let resp =
+    middleware.apply([handle_head.run], ctx, fn(ctx: Context(helpers.TestApp)) {
       // handle_head converts HEAD to GET for the handler
-      case req.method {
+      case ctx.req.method {
         http.Get -> response.empty(200)
         _ -> response.empty(500)
       }
     })
 
-  response.status
+  resp.status
   |> should.equal(200)
 }
 
@@ -214,9 +234,9 @@ pub fn handle_head_converts_head_to_get_test() {
 
 pub fn multiple_wrappers_compose_in_pipeline_test() {
   let req = make_request()
-  let ctx = TestContext("test")
+  let ctx = context.new(req, TestApp("test"))
 
-  let response =
+  let resp =
     middleware.apply(
       [
         method_override.run,
@@ -224,12 +244,11 @@ pub fn multiple_wrappers_compose_in_pipeline_test() {
         rescue_crashes.run,
         handle_head.run,
       ],
-      req,
       ctx,
-      fn(_req, _ctx) { response.empty(200) },
+      fn(_ctx) { response.empty(200) },
     )
 
-  response.status
+  resp.status
   |> should.equal(200)
 }
 
@@ -238,23 +257,23 @@ pub fn full_web_pipeline_test() {
   let req =
     make_request()
     |> request.set_path("/users")
-  let ctx = TestContext("test")
+  let ctx = context.new(req, TestApp("test"))
 
-  let response =
+  let resp =
     middleware.apply(
       [
+        expects_html.run,
         serve_static.run,
         method_override.run,
         log_request.run,
         rescue_crashes.run,
         handle_head.run,
       ],
-      req,
       ctx,
-      fn(_req, _ctx) { response.empty(200) },
+      fn(_ctx) { response.empty(200) },
     )
 
-  response.status
+  resp.status
   |> should.equal(200)
 
   cleanup_app_config()
@@ -264,22 +283,22 @@ pub fn full_api_pipeline_test() {
   let req =
     make_request()
     |> request.set_path("/api/users")
-  let ctx = TestContext("test")
+  let ctx = context.new(req, TestApp("test"))
 
-  let response =
+  let resp =
     middleware.apply(
       [
+        expects_json.run,
         method_override.run,
         log_request.run,
         rescue_crashes.run,
         handle_head.run,
       ],
-      req,
       ctx,
-      fn(_req, _ctx) { response.empty(200) },
+      fn(_ctx) { response.empty(200) },
     )
 
-  response.status
+  resp.status
   |> should.equal(200)
 }
 

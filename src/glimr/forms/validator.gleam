@@ -17,10 +17,11 @@ import gleam/regexp
 import gleam/result
 import gleam/string
 import glimr/forms/form.{type UploadedFile}
-import glimr/http/kernel.{type Request, type Response}
+import glimr/http/context.{type Context}
+import glimr/http/http.{type Response}
 import glimr/response/redirect
-import glimr/response/response.{type ResponseFormat, HTML, JSON}
-import glimr/session/session.{type Session}
+import glimr/response/response.{HTML, JSON}
+import glimr/session/session
 import simplifile
 import wisp.{type FormData as WispFormData}
 
@@ -166,30 +167,20 @@ type CustomFileValidation(ctx) =
 ///   )
 /// }
 ///
-/// pub fn validate(req: Request, ctx: Context, next: fn(Data) -> Response) {
-///   use validated <- validator.run(
-///     req,
-///     ctx,
-///     ctx.response_format,
-///     ctx.session,
-///     rules,
-///     data
-///   )
+/// pub fn validate(ctx: Context(App), next: fn(Data) -> Response) {
+///   use validated <- validator.run(ctx, rules, data)
 ///
 ///   next(validated)
 /// }
 /// ```
 ///
 pub fn run(
-  req: Request,
-  ctx: ctx,
-  response_format: ResponseFormat,
-  session: Session,
-  rules: fn() -> List(Rule(ctx)),
+  ctx: Context(app),
+  rules: fn() -> List(Rule(Context(app))),
   data_fn: fn(FormData) -> typed_form,
   on_valid: fn(typed_form) -> Response,
 ) -> Response {
-  use wisp_form_data <- wisp.require_form(req)
+  use wisp_form_data <- wisp.require_form(ctx.req)
 
   let data = form_data(wisp_form_data)
 
@@ -198,16 +189,16 @@ pub fn run(
       on_valid(data_fn(data))
     }
     Error(errors) -> {
-      case response_format {
+      case ctx.response_format {
         HTML -> {
           list.each(errors, fn(err) {
             case err.messages {
               [first, ..] ->
-                session.flash(session, "errors." <> err.name, first)
+                session.flash(ctx.session, "errors." <> err.name, first)
               [] -> Nil
             }
           })
-          redirect.back(req)
+          redirect.back(ctx)
         }
         JSON -> {
           json.object([

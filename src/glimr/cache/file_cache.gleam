@@ -11,8 +11,7 @@ import glimr/cache/driver
 import glimr/cache/file/cache as file_cache
 import glimr/cache/file/pool
 import glimr/session/file_store
-import glimr/session/session.{type Session}
-import glimr/session/store
+import glimr/session/store.{type SessionStore}
 
 // ------------------------------------------------------------- Public Functions
 
@@ -27,18 +26,15 @@ pub fn start(name: String) -> CachePool {
   wrap_pool(internal)
 }
 
-/// Registers a file-based session store so the session
-/// middleware can load, save, and destroy sessions without
-/// knowing which backend is active. Unlike Redis where TTLs
-/// handle expiration, file sessions need periodic garbage
-/// collection to clean up expired session files — that's
-/// handled by the file_store module's GC callback.
+/// For apps that don't need Redis, file-based sessions keep
+/// things simple — session data lives as files on disk, same as
+/// the cache. Pass the result to `session.setup()` in your
+/// bootstrap and you've got sessions with zero extra
+/// infrastructure.
 ///
-pub fn start_session(pool: pool.Pool) -> Session {
-  let session = file_store.create(pool)
-  store.cache_store(session)
-
-  session.empty()
+pub fn session_store(name: String) -> SessionStore {
+  let internal = start_pool(name)
+  file_store.create(internal)
 }
 
 // ------------------------------------------------------------- Internal Public Functions

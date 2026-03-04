@@ -9,11 +9,11 @@
 //// stay focused on the data, not the encoding.
 ////
 
-import gleam/http
+import gleam/http.{type Method}
 import gleam/int
 import gleam/json.{type Json}
 import gleam/string
-import glimr/http/kernel.{type Response}
+import glimr/http/http.{type Response} as _glimr_http
 import simplifile
 import wisp
 
@@ -218,7 +218,7 @@ pub fn internal_server_error() -> Response {
 /// compiler generates these automatically so developers get
 /// correct HTTP semantics without thinking about it.
 ///
-pub fn method_not_allowed(allowed: List(http.Method)) -> Response {
+pub fn method_not_allowed(allowed: List(Method)) -> Response {
   wisp.method_not_allowed(allowed)
 }
 

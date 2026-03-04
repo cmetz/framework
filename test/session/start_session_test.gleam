@@ -4,9 +4,9 @@ import gleam/result
 import gleam/string
 import gleeunit/should
 import glimr/config/config
-import glimr/session/cookie_store
+import glimr/http/context
+import glimr/http/middleware/load_session
 import glimr/session/session
-import glimr/session/store
 import simplifile
 import wisp
 import wisp/simulate
@@ -14,6 +14,10 @@ import wisp/simulate
 const config_dir = "config"
 
 const session_config_file = "config/session.toml"
+
+pub type TestApp {
+  TestApp
+}
 
 fn setup(expire_on_close: Bool) -> Nil {
   let _ = simplifile.create_directory_all(config_dir)
@@ -33,8 +37,8 @@ expire_on_close = " <> expire_str <> "
   config.load()
 
   // Use cookie store — simplest, no pool needed
-  let s = cookie_store.create()
-  store.cache_store(s)
+  session.cookie_store()
+  |> session.setup()
 
   Nil
 }
@@ -56,7 +60,8 @@ fn test_request() -> wisp.Request {
 pub fn expire_on_close_omits_max_age_test() {
   setup(True)
 
-  let resp = session.load(test_request(), fn(_req, _session) { wisp.ok() })
+  let ctx = context.new(test_request(), TestApp)
+  let resp = load_session.run(ctx, fn(_ctx) { wisp.ok() })
 
   // Find the Set-Cookie header for our session
   let cookie_header = find_set_cookie(resp.headers, "test_session")
@@ -74,7 +79,8 @@ pub fn expire_on_close_omits_max_age_test() {
 pub fn expire_on_close_false_includes_max_age_test() {
   setup(False)
 
-  let resp = session.load(test_request(), fn(_req, _session) { wisp.ok() })
+  let ctx = context.new(test_request(), TestApp)
+  let resp = load_session.run(ctx, fn(_ctx) { wisp.ok() })
 
   // Find the Set-Cookie header for our session
   let cookie_header = find_set_cookie(resp.headers, "test_session")
@@ -92,10 +98,11 @@ pub fn expire_on_close_false_includes_max_age_test() {
 pub fn session_cookie_is_set_on_response_test() {
   setup(False)
 
+  let ctx = context.new(test_request(), TestApp)
   let resp =
-    session.load(test_request(), fn(_req, sess) {
+    load_session.run(ctx, fn(ctx: context.Context(TestApp)) {
       // Write something so the session is dirty and gets saved
-      session.put(sess, "user", "test")
+      session.put(ctx.session, "user", "test")
       wisp.ok()
     })
 

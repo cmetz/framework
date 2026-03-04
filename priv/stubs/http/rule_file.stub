@@ -1,10 +1,11 @@
-import app/http/context/ctx.{type Context}
+import app/app.{type App}
 import gleam/string
 import glimr/forms/form.{type UploadedFile}
 import glimr/forms/validator.{type FormData}
+import glimr/http/context.{type Context}
 
 // docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#custom-file-validation-rules
 
-pub fn run(field: String, file: UploadedFile, data: FormData, ctx: Context) -> Result(Nil, String) {
+pub fn run(field: String, file: UploadedFile, data: FormData, ctx: Context(App)) -> Result(Nil, String) {
   todo
 }

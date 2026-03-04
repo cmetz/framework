@@ -8,7 +8,8 @@
 //// handler serves it.
 ////
 
-import glimr/http/kernel.{type Next, type Request, type Response}
+import glimr/http/context.{type Context}
+import glimr/http/http.{type Response}
 import wisp
 
 // ------------------------------------------------------------- Public Functions
@@ -19,8 +20,8 @@ import wisp
 /// the pipeline ensures even requests that fail in later
 /// middleware steps are still logged for debugging.
 ///
-pub fn run(req: Request, ctx: context, next: Next(context)) -> Response {
-  use <- wisp.log_request(req)
+pub fn run(ctx: Context(app), next: fn(Context(app)) -> Response) -> Response {
+  use <- wisp.log_request(ctx.req)
 
-  next(req, ctx)
+  next(ctx)
 }

@@ -1,11 +1,12 @@
-import app/http/context/ctx.{type Context}
-import glimr/http/kernel.{type Request, type Response}
+import app/app.{type App}
+import glimr/http/context.{type Context}
+import glimr/http/http.{type Response}
 
 // docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#creating-controllers
 // docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#views--responses
 // docs: https://github.com/glimr-org/glimr?tab=readme-ov-file#redirects
 
-pub fn index(_req: Request, _ctx: Context) -> Response {
+pub fn index(_ctx: Context(App)) -> Response {
   todo
 }
 

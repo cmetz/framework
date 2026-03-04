@@ -7,8 +7,8 @@ import glimr/routing/compiler
 
 // Standard imports for test sources
 const standard_imports = "
-import glimr/http/kernel.{type Request}
-import app/http/context/ctx.{type Context}
+import glimr/http/context.{type Context}
+import app/app.{type App}
 "
 
 // Helper to compile controller routes with standard imports
@@ -27,7 +27,7 @@ pub fn parse_get_route_test() {
     "
 /// @get \"/\"
 ///
-pub fn show(_req: Request, _ctx: Context) {
+pub fn show(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -40,7 +40,7 @@ pub fn show(_req: Request, _ctx: Context) {
   |> should.be_true
 
   result.routes_code
-  |> string.contains("Get -> home_controller.show(req, ctx)")
+  |> string.contains("Get -> home_controller.show(ctx)")
   |> should.be_true
 
   result.used_methods
@@ -52,7 +52,7 @@ pub fn parse_post_route_test() {
     "
 /// @post \"/users\"
 ///
-pub fn store(_req: Request, _ctx: Context) {
+pub fn store(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -65,7 +65,7 @@ pub fn store(_req: Request, _ctx: Context) {
   |> should.be_true
 
   result.routes_code
-  |> string.contains("Post -> user_controller.store(req, ctx)")
+  |> string.contains("Post -> user_controller.store(ctx)")
   |> should.be_true
 
   result.used_methods
@@ -77,13 +77,13 @@ pub fn parse_multiple_methods_same_path_test() {
     "
 /// @get \"/users\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 
 /// @post \"/users\"
 ///
-pub fn store(_req: Request, _ctx: Context) {
+pub fn store(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -92,11 +92,11 @@ pub fn store(_req: Request, _ctx: Context) {
     compile_controller("app/http/controllers/user_controller", source)
 
   result.routes_code
-  |> string.contains("Get -> user_controller.index(req, ctx)")
+  |> string.contains("Get -> user_controller.index(ctx)")
   |> should.be_true
 
   result.routes_code
-  |> string.contains("Post -> user_controller.store(req, ctx)")
+  |> string.contains("Post -> user_controller.store(ctx)")
   |> should.be_true
 
   result.used_methods
@@ -112,7 +112,7 @@ pub fn parse_redirect_test() {
 /// @redirect \"/old\"
 /// @get \"/new\"
 ///
-pub fn show(_req: Request, _ctx: Context) {
+pub fn show(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -135,7 +135,7 @@ pub fn parse_permanent_redirect_test() {
 /// @redirect_permanent \"/old-path\"
 /// @get \"/new-path\"
 ///
-pub fn show(_req: Request, _ctx: Context) {
+pub fn show(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -160,7 +160,7 @@ pub fn parse_route_with_middleware_test() {
 /// @get \"/admin\"
 /// @middleware \"auth\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -172,7 +172,7 @@ pub fn index(_req: Request, _ctx: Context) {
   |> should.be_true
 
   result.routes_code
-  |> string.contains("middleware.apply([auth.run], req, ctx)")
+  |> string.contains("middleware.apply([auth.run], ctx)")
   |> should.be_true
 }
 
@@ -183,7 +183,7 @@ pub fn parse_route_with_multiple_middleware_test() {
 /// @middleware \"auth\"
 /// @middleware \"logging\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -209,13 +209,13 @@ pub fn parse_group_middleware_test() {
 
 /// @get \"/dashboard\"
 ///
-pub fn dashboard(_req: Request, _ctx: Context) {
+pub fn dashboard(_ctx: Context(App)) {
   wisp.ok()
 }
 
 /// @get \"/settings\"
 ///
-pub fn settings(_req: Request, _ctx: Context) {
+pub fn settings(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -243,7 +243,7 @@ pub fn parse_group_middleware_combined_with_route_middleware_test() {
 /// @get \"/dashboard\"
 /// @middleware \"logging\"
 ///
-pub fn dashboard(_req: Request, _ctx: Context) {
+pub fn dashboard(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -266,7 +266,7 @@ pub fn generates_controller_imports_test() {
   let source1 = standard_imports <> "
 /// @get \"/\"
 ///
-pub fn show(_req: Request, _ctx: Context) {
+pub fn show(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -274,7 +274,7 @@ pub fn show(_req: Request, _ctx: Context) {
   let source2 = standard_imports <> "
 /// @get \"/users\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -301,7 +301,7 @@ pub fn nested_controller_uses_unique_alias_test() {
   let source1 = standard_imports <> "
 /// @get \"/\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -309,7 +309,7 @@ pub fn index(_req: Request, _ctx: Context) {
   let source2 = standard_imports <> "
 /// @get \"/api\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -352,7 +352,7 @@ pub fn parse_route_with_parameter_test() {
     "
 /// @get \"/users/:id\"
 ///
-pub fn show(_req: Request, _ctx: Context, id: String) {
+pub fn show(_ctx: Context(App), id: String) {
   wisp.ok()
 }
 "
@@ -365,7 +365,7 @@ pub fn show(_req: Request, _ctx: Context, id: String) {
   |> should.be_true
 
   result.routes_code
-  |> string.contains("user_controller.show(req, ctx, id)")
+  |> string.contains("user_controller.show(ctx, id)")
   |> should.be_true
 }
 
@@ -374,7 +374,7 @@ pub fn parse_route_with_multiple_parameters_test() {
     "
 /// @get \"/posts/:post_id/comments/:comment_id\"
 ///
-pub fn show(_req: Request, _ctx: Context, post_id: String, comment_id: String) {
+pub fn show(_ctx: Context(App), post_id: String, comment_id: String) {
   wisp.ok()
 }
 "
@@ -387,7 +387,7 @@ pub fn show(_req: Request, _ctx: Context, post_id: String, comment_id: String) {
   |> should.be_true
 
   result.routes_code
-  |> string.contains("comment_controller.show(req, ctx, post_id, comment_id)")
+  |> string.contains("comment_controller.show(ctx, post_id, comment_id)")
   |> should.be_true
 }
 
@@ -398,7 +398,7 @@ pub fn generates_404_fallback_test() {
     "
 /// @get \"/\"
 ///
-pub fn show(_req: Request, _ctx: Context) {
+pub fn show(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -418,13 +418,13 @@ pub fn generates_method_not_allowed_test() {
     "
 /// @get \"/users\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 
 /// @post \"/users\"
 ///
-pub fn store(_req: Request, _ctx: Context) {
+pub fn store(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -444,13 +444,13 @@ pub fn annotation_parser_extracts_routes_test() {
     "
 /// @get \"/users\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 
 /// @post \"/users\"
 ///
-pub fn store(_req: Request, _ctx: Context) {
+pub fn store(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -470,7 +470,7 @@ pub fn annotation_parser_extracts_group_middleware_test() {
 
 /// @get \"/admin\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -487,7 +487,7 @@ pub fn annotation_parser_extracts_route_middleware_test() {
 /// @get \"/admin\"
 /// @middleware \"auth\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -510,7 +510,7 @@ pub fn annotation_parser_combines_group_and_route_middleware_test() {
 /// @get \"/admin\"
 /// @middleware \"route\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -532,7 +532,7 @@ pub fn annotation_parser_extracts_redirects_test() {
 /// @redirect \"/old\"
 /// @get \"/new\"
 ///
-pub fn show(_req: Request, _ctx: Context) {
+pub fn show(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -570,7 +570,7 @@ pub fn rejects_reserved_path_param_req_test() {
     "
 /// @get \"/users/:req\"
 ///
-pub fn show(_req: Request, _ctx: Context, req: String) {
+pub fn show(_ctx: Context(App), req: String) {
   wisp.ok()
 }
 "
@@ -593,7 +593,7 @@ pub fn rejects_reserved_path_param_ctx_test() {
     "
 /// @get \"/users/:ctx\"
 ///
-pub fn show(_req: Request, _ctx: Context, ctx: String) {
+pub fn show(_ctx: Context(App), ctx: String) {
   wisp.ok()
 }
 "
@@ -620,7 +620,7 @@ pub fn rejects_invalid_group_middleware_test() {
 
 /// @get \"/users\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -648,7 +648,7 @@ pub fn rejects_invalid_route_middleware_test() {
 /// @get \"/users\"
 /// @middleware \"nonexistent\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -677,7 +677,7 @@ pub fn rejects_group_middleware_without_run_test() {
 
 /// @get \"/users\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -705,7 +705,7 @@ pub fn rejects_route_middleware_without_run_test() {
 /// @get \"/users\"
 /// @middleware \"no_handle\"
 ///
-pub fn index(_req: Request, _ctx: Context) {
+pub fn index(_ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -737,7 +737,7 @@ import app/http/validators/user_validator.{type Data}
 /// @post \"/users\"
 /// @validator \"user_validator\"
 ///
-pub fn store(_req: Request, _ctx: Context, validated: Data) {
+pub fn store(_ctx: Context(App), validated: Data) {
   wisp.ok()
 }
 "
@@ -746,11 +746,11 @@ pub fn store(_req: Request, _ctx: Context, validated: Data) {
     compile_controller("app/http/controllers/user_controller", source)
 
   result.routes_code
-  |> string.contains("user_validator.validate(req, ctx)")
+  |> string.contains("user_validator.validate(ctx)")
   |> should.be_true
 
   result.routes_code
-  |> string.contains("user_controller.store(req, ctx, validated)")
+  |> string.contains("user_controller.store(ctx, validated)")
   |> should.be_true
 }
 
@@ -762,7 +762,7 @@ import app/http/validators/user_validator.{type Data}
 /// @post \"/users/:id\"
 /// @validator \"user_validator\"
 ///
-pub fn update(_req: Request, _ctx: Context, id: String, validated: Data) {
+pub fn update(_ctx: Context(App), id: String, validated: Data) {
   wisp.ok()
 }
 "
@@ -771,12 +771,12 @@ pub fn update(_req: Request, _ctx: Context, id: String, validated: Data) {
     compile_controller("app/http/controllers/user_controller", source)
 
   result.routes_code
-  |> string.contains("user_validator.validate(req, ctx)")
+  |> string.contains("user_validator.validate(ctx)")
   |> should.be_true
 
   // Path params come before validated
   result.routes_code
-  |> string.contains("user_controller.update(req, ctx, id, validated)")
+  |> string.contains("user_controller.update(ctx, id, validated)")
   |> should.be_true
 }
 
@@ -789,7 +789,7 @@ import app/http/validators/user_validator.{type Data}
 /// @middleware \"auth\"
 /// @validator \"user_validator\"
 ///
-pub fn store(_req: Request, _ctx: Context, validated: Data) {
+pub fn store(_ctx: Context(App), validated: Data) {
   wisp.ok()
 }
 "
@@ -803,7 +803,7 @@ pub fn store(_req: Request, _ctx: Context, validated: Data) {
   |> should.be_true
 
   result.routes_code
-  |> string.contains("user_validator.validate(req, ctx)")
+  |> string.contains("user_validator.validate(ctx)")
   |> should.be_true
 }
 
@@ -813,7 +813,7 @@ pub fn rejects_invalid_validator_test() {
 /// @post \"/users\"
 /// @validator \"nonexistent\"
 ///
-pub fn store(_req: Request, _ctx: Context, validated: Data) {
+pub fn store(_ctx: Context(App), validated: Data) {
   wisp.ok()
 }
 "
@@ -841,7 +841,7 @@ pub fn annotation_parser_extracts_validator_test() {
 /// @post \"/users\"
 /// @validator \"user_validator\"
 ///
-pub fn store(_req: Request, _ctx: Context, validated: Data) {
+pub fn store(_ctx: Context(App), validated: Data) {
   wisp.ok()
 }
 "
@@ -864,7 +864,7 @@ pub fn flexible_params_validated_first_test() {
 /// @post \"/users/:id\"
 /// @validator \"user_validator\"
 ///
-pub fn update(validated: user_validator.Data, id: String, req: Request, ctx: Context) {
+pub fn update(validated: user_validator.Data, id: String, ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -874,16 +874,16 @@ pub fn update(validated: user_validator.Data, id: String, req: Request, ctx: Con
 
   // Args should be in the function's param order
   result.routes_code
-  |> string.contains("user_controller.update(validated, id, req, ctx)")
+  |> string.contains("user_controller.update(validated, id, ctx)")
   |> should.be_true
 }
 
-pub fn flexible_params_ctx_before_req_test() {
+pub fn flexible_params_ctx_first_test() {
   let source =
     "
 /// @get \"/users/:id\"
 ///
-pub fn show(ctx: Context, req: Request, id: String) {
+pub fn show(ctx: Context(App), id: String) {
   wisp.ok()
 }
 "
@@ -893,7 +893,7 @@ pub fn show(ctx: Context, req: Request, id: String) {
 
   // Args should match function signature order
   result.routes_code
-  |> string.contains("user_controller.show(ctx, req, id)")
+  |> string.contains("user_controller.show(ctx, id)")
   |> should.be_true
 }
 
@@ -910,7 +910,7 @@ pub fn show(id: String, post_id: String) {
   let assert Ok(result) =
     compile_controller("app/http/controllers/comment_controller", source)
 
-  // Only route params, no req/ctx
+  // Only route params, no ctx
   result.routes_code
   |> string.contains("comment_controller.show(id, post_id)")
   |> should.be_true
@@ -940,7 +940,7 @@ pub fn rejects_missing_route_param_test() {
     "
 /// @get \"/users/:id\"
 ///
-pub fn show(req: Request, ctx: Context) {
+pub fn show(ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -967,7 +967,7 @@ pub fn rejects_extra_handler_param_test() {
     "
 /// @get \"/users/:id\"
 ///
-pub fn show(req: Request, ctx: Context, id: String, name: String) {
+pub fn show(ctx: Context(App), id: String, name: String) {
   wisp.ok()
 }
 "
@@ -995,7 +995,7 @@ pub fn rejects_missing_validator_data_param_test() {
 /// @post \"/users\"
 /// @validator \"user_validator\"
 ///
-pub fn store(req: Request, ctx: Context) {
+pub fn store(ctx: Context(App)) {
   wisp.ok()
 }
 "
@@ -1017,39 +1017,12 @@ pub fn store(req: Request, ctx: Context) {
   }
 }
 
-pub fn rejects_untyped_req_param_test() {
-  let source =
-    "
-/// @get \"/users\"
-///
-pub fn index(req, ctx: Context) {
-  wisp.ok()
-}
-"
-
-  let result =
-    compile_controller("app/http/controllers/user_controller", source)
-
-  case result {
-    Error(msg) -> {
-      msg
-      |> string.contains("has parameter 'req' without a type annotation")
-      |> should.be_true
-
-      msg
-      |> string.contains("Please specify the type: req: Request")
-      |> should.be_true
-    }
-    Ok(_) -> should.fail()
-  }
-}
-
 pub fn rejects_untyped_ctx_param_test() {
   let source =
     "
 /// @get \"/users\"
 ///
-pub fn index(req: Request, ctx) {
+pub fn index(ctx) {
   wisp.ok()
 }
 "
@@ -1064,7 +1037,7 @@ pub fn index(req: Request, ctx) {
       |> should.be_true
 
       msg
-      |> string.contains("Please specify the type: ctx: Context")
+      |> string.contains("Please specify the type: ctx: Context(App)")
       |> should.be_true
     }
     Ok(_) -> should.fail()
@@ -1077,7 +1050,7 @@ pub fn hints_about_data_type_for_validated_param_test() {
 /// @post \"/users\"
 /// @validator \"user_validator\"
 ///
-pub fn store(req: Request, ctx: Context, validated) {
+pub fn store(ctx: Context(App), validated) {
   wisp.ok()
 }
 "
@@ -1110,7 +1083,7 @@ pub fn hints_about_data_type_for_data_param_test() {
 /// @post \"/users\"
 /// @validator \"user_validator\"
 ///
-pub fn store(req: Request, ctx: Context, data) {
+pub fn store(ctx: Context(App), data) {
   wisp.ok()
 }
 "
@@ -1137,7 +1110,7 @@ pub fn store(req: Request, ctx: Context, data) {
   }
 }
 
-pub fn uses_underscore_for_unused_req_ctx_test() {
+pub fn uses_underscore_for_unused_ctx_test() {
   let source =
     "
 /// @get \"/health\"
@@ -1150,30 +1123,7 @@ pub fn check() {
   let assert Ok(result) =
     compile_controller("app/http/controllers/health_controller", source)
 
-  // When no handler uses req/ctx, they should be marked as unused
-  result.uses_req
-  |> should.be_false
-
-  result.uses_ctx
-  |> should.be_false
-}
-
-pub fn detects_req_usage_test() {
-  let source =
-    "
-/// @get \"/users\"
-///
-pub fn index(req: Request) {
-  wisp.ok()
-}
-"
-
-  let assert Ok(result) =
-    compile_controller("app/http/controllers/user_controller", source)
-
-  result.uses_req
-  |> should.be_true
-
+  // When no handler uses ctx, it should be marked as unused
   result.uses_ctx
   |> should.be_false
 }
@@ -1183,16 +1133,13 @@ pub fn detects_ctx_usage_test() {
     "
 /// @get \"/users\"
 ///
-pub fn index(ctx: Context) {
+pub fn index(ctx: Context(App)) {
   wisp.ok()
 }
 "
 
   let assert Ok(result) =
     compile_controller("app/http/controllers/user_controller", source)
-
-  result.uses_req
-  |> should.be_false
 
   result.uses_ctx
   |> should.be_true

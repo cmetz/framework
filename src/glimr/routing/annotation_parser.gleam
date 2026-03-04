@@ -45,17 +45,16 @@ pub type ParsedRoute {
 
 /// Everything the route compiler needs from a single controller
 /// file — the routes themselves, group-level middleware, and
-/// import flags. The import checks let us catch missing
-/// `Request` or `Context` imports early with a helpful error
-/// instead of letting the Gleam compiler produce a confusing
-/// "unknown type" message.
+/// import flags. The import check lets us catch a missing
+/// `Context` import early with a helpful error instead of
+/// letting the Gleam compiler produce a confusing "unknown
+/// type" message.
 ///
 pub type ParseResult {
   ParseResult(
     group_middleware: List(String),
     routes: List(ParsedRoute),
-    has_request_import: Bool,
-    has_ctx_context_import: Bool,
+    has_context_import: Bool,
     validator_data_imports: List(String),
   )
 }
@@ -89,15 +88,13 @@ type AnnotationState {
 pub fn parse(content: String) -> ParseResult {
   let group_middleware = extract_group_middleware(content)
   let routes = extract_routes(content, group_middleware)
-  let has_request_import = check_request_import(content)
-  let has_ctx_context_import = check_ctx_context_import(content)
+  let has_context_import = check_context_import(content)
   let validator_data_imports = extract_validator_data_imports(content)
 
   ParseResult(
     group_middleware:,
     routes:,
-    has_request_import:,
-    has_ctx_context_import:,
+    has_context_import:,
     validator_data_imports:,
   )
 }
@@ -567,26 +564,6 @@ fn import_contains_type(line: String, type_name: String) -> Bool {
   }
 }
 
-/// If a handler has a `Request` parameter but the controller
-/// didn't import it from kernel, the Gleam compiler would
-/// produce a confusing "unknown type" error pointing at
-/// generated code. Catching it here lets us show a helpful
-/// message pointing at the actual controller file.
-///
-fn check_request_import(content: String) -> Bool {
-  content
-  |> string.split("\n")
-  |> list.any(fn(line) {
-    let trimmed = string.trim(line)
-    case string.starts_with(trimmed, "//") {
-      True -> False
-      False ->
-        string.starts_with(trimmed, "import glimr/http/kernel.{")
-        && import_contains_type(trimmed, "Request")
-    }
-  })
-}
-
 /// When a handler uses `@validator "login"`, its `Data`
 /// parameter type comes from the validator module. We need to
 /// know which validator modules have `Data` imported so the
@@ -622,13 +599,12 @@ fn extract_validator_data_imports(content: String) -> List(String) {
   })
 }
 
-/// Same idea as the Request import check — if a handler takes a
-/// `Context` parameter but the controller didn't import it from
-/// ctx, we want to catch it early with a clear message rather
-/// than letting the Gleam compiler blame the generated dispatch
-/// code.
+/// If a handler takes a `Context` parameter but the controller
+/// didn't import it from glimr/http/context, we want to catch
+/// it early with a clear message rather than letting the Gleam
+/// compiler blame the generated dispatch code.
 ///
-fn check_ctx_context_import(content: String) -> Bool {
+fn check_context_import(content: String) -> Bool {
   content
   |> string.split("\n")
   |> list.any(fn(line) {
@@ -636,8 +612,7 @@ fn check_ctx_context_import(content: String) -> Bool {
     case string.starts_with(trimmed, "//") {
       True -> False
       False ->
-        string.starts_with(trimmed, "import ")
-        && string.contains(trimmed, "/ctx.{")
+        string.starts_with(trimmed, "import glimr/http/context.{")
         && import_contains_type(trimmed, "Context")
     }
   })

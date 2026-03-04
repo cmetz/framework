@@ -1,57 +1,53 @@
 //// Router
 ////
-//// Pattern matching router with prefix-based route groups for
-//// organizing routes with shared middleware. Provides
-//// type-safe parameter extraction and lazy loading of route
-//// handlers based on URL prefix matching.
+//// Web apps and API endpoints need different middleware — HTML
+//// error pages vs JSON responses, static file serving vs CORS
+//// headers. Route groups let you split routes by prefix (e.g.
+//// "/api" vs everything else) and wire each group to the right
+//// middleware stack automatically.
 
 import gleam/http.{type Method}
 import gleam/http/response
 import gleam/list
 import gleam/string
-import glimr/http/kernel.{type MiddlewareGroup, type Request, type Response}
+import glimr/http/context.{type Context}
+import glimr/http/http.{type Response} as _glimr_http
+import glimr/http/kernel.{type MiddlewareGroup}
 import glimr/routing/route_group
 import wisp
 
-/// Groups routes together with a shared middleware group and
-/// handler function. Routes use pattern matching for type-safe
-/// parameter extraction. The prefix field enables efficient
-/// route matching and lazy loading of route modules.
+/// Each group bundles a URL prefix, a middleware stack, and the
+/// compiled route handler for that section of the app. The
+/// prefix enables fast matching — "/api/users/123" checks if
+/// the path starts with "/api" before even looking at the route
+/// table, and lazily loads only the matching module.
 ///
 pub type RouteGroup(context) {
   RouteGroup(
     prefix: String,
     middleware_group: MiddlewareGroup,
-    routes: fn(List(String), Method, Request, context) -> Response,
+    routes: fn(List(String), Method, context) -> Response,
   )
 }
 
 // ------------------------------------------------------------- Public Functions
 
-/// Main entry point for routing HTTP requests. Matches the
-/// request path against registered route groups, applies
-/// middleware, and calls the route handler with the full path.
-///
-/// Route groups are checked in order. The first matching prefix
-/// wins. Empty prefix ("") acts as a catch-all and should
-/// always be last in your route group list.
-///
-/// Flow for GET /api/users/123: 1. Parse path into ["api",
-/// "users", "123"] 2. Find group with prefix "/api" 3. Apply
-/// API middleware group 4. Call routes(["api", "users", "123"],
-/// Get, req, ctx)
+/// The main request entry point. Splits the URL into segments,
+/// finds the first route group whose prefix matches, applies
+/// that group's middleware, and calls its route handler. Groups
+/// are checked in order — put specific prefixes like "/api"
+/// before the catch-all "" so they get a chance to match.
 ///
 pub fn handle(
-  req: Request,
-  ctx,
-  route_groups: List(RouteGroup(ctx)),
-  kernel_handle: fn(Request, ctx, MiddlewareGroup, fn(Request, ctx) -> Response) ->
+  ctx: Context(app),
+  route_groups: List(RouteGroup(Context(app))),
+  kernel_handle: fn(Context(app), MiddlewareGroup, fn(Context(app)) -> Response) ->
     Response,
 ) -> Response {
   // Parse request path into segments
   // Example: "/api/users/123" → ["api", "users", "123"]
-  let path_segments = wisp.path_segments(req)
-  let method = req.method
+  let path_segments = wisp.path_segments(ctx.req)
+  let method = ctx.req.method
 
   // Find first route group whose prefix matches the path
   // Empty prefix ("") matches everything, so put it last
@@ -77,26 +73,26 @@ pub fn handle(
   case matching_group {
     Ok(group) -> {
       // Apply group middleware then call route handler with full path
-      use req, ctx <- kernel_handle(req, ctx, group.middleware_group)
-      group.routes(path_segments, method, req, ctx)
+      use ctx <- kernel_handle(ctx, group.middleware_group)
+      group.routes(path_segments, method, ctx)
     }
 
     // No matching group (should never happen with catch-all)
     Error(_) -> {
-      use _req, _ctx <- kernel_handle(req, ctx, kernel.Web)
+      use _ctx <- kernel_handle(ctx, kernel.Web)
       response.Response(404, [], wisp.Text(""))
     }
   }
 }
 
-/// Registers route groups by loading config from
-/// config/route_group.toml and attaching route handlers. Takes
-/// a loader function that returns the routes function for each
-/// named group.
+/// Route groups are defined in config/route_group.toml so
+/// adding a new API version or admin section is a config
+/// change, not a code change. The `routes_for` callback maps
+/// each group name to its compiled route handler so the router
+/// knows which module handles which prefix.
 ///
-pub fn register(
-  routes_for: fn(String) ->
-    fn(List(String), Method, Request, context) -> Response,
+pub fn load(
+  routes_for: fn(String) -> fn(List(String), Method, context) -> Response,
 ) -> List(RouteGroup(context)) {
   route_group.load()
   |> list.map(fn(group_config) {
@@ -110,10 +106,10 @@ pub fn register(
 
 // ------------------------------------------------------------- Private Functions
 
-/// Checks if a list starts with a given prefix. Used to match
-/// URL path segments against route group prefixes. Returns True
-/// if list begins with all elements in prefix, False otherwise.
-/// Empty prefix always matches.
+/// Gleam doesn't have a built-in list.starts_with, so this
+/// recursively checks if the path segments begin with the
+/// prefix segments. An empty prefix always matches — that's the
+/// catch-all behavior the router relies on.
 ///
 fn starts_with(list: List(a), prefix: List(a)) -> Bool {
   case list, prefix {
