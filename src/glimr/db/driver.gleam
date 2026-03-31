@@ -370,7 +370,7 @@ fn unwrap_or_panic(
         <> conn_name
         <> "' is missing required parameter: "
         <> param
-        <> ". Check your database_provider.gleam configuration."
+        <> ". Check your .env file and config/database.toml configuration."
       }
   }
 }
