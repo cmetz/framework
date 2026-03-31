@@ -352,6 +352,97 @@ pub fn show(_ctx: Context(App), post_id: String, comment_id: String) {
   |> should.be_true
 }
 
+// ------------------------------------------------------------- Int Route Parameter Tests
+
+pub fn int_param_wraps_with_int_parse_test() {
+  let source =
+    "
+/// @get \"/posts/:id\"
+///
+pub fn show(_ctx: Context(App), id: Int) {
+  wisp.ok()
+}
+"
+
+  let assert Ok(result) =
+    compile_controller("app/http/controllers/post_controller", source)
+
+  result.routes_code
+  |> string.contains("case int.parse(id) {")
+  |> should.be_true
+
+  result.routes_code
+  |> string.contains("Ok(id) -> post_controller.show(ctx, id)")
+  |> should.be_true
+
+  result.routes_code
+  |> string.contains("Error(_) -> response.not_found()")
+  |> should.be_true
+}
+
+pub fn int_param_adds_gleam_int_import_test() {
+  let source =
+    "
+/// @get \"/posts/:id\"
+///
+pub fn show(_ctx: Context(App), id: Int) {
+  wisp.ok()
+}
+"
+
+  let assert Ok(result) =
+    compile_controller("app/http/controllers/post_controller", source)
+
+  result.imports
+  |> list.any(fn(i) { string.contains(i, "gleam/int") })
+  |> should.be_true
+}
+
+pub fn mixed_string_and_int_params_test() {
+  let source =
+    "
+/// @get \"/users/:name/posts/:id\"
+///
+pub fn show(_ctx: Context(App), name: String, id: Int) {
+  wisp.ok()
+}
+"
+
+  let assert Ok(result) =
+    compile_controller("app/http/controllers/post_controller", source)
+
+  result.routes_code
+  |> string.contains("case int.parse(id) {")
+  |> should.be_true
+
+  // String param passed directly, not parsed
+  result.routes_code
+  |> string.contains("post_controller.show(ctx, name, id)")
+  |> should.be_true
+}
+
+pub fn multiple_int_params_test() {
+  let source =
+    "
+/// @get \"/posts/:post_id/comments/:comment_id\"
+///
+pub fn show(_ctx: Context(App), post_id: Int, comment_id: Int) {
+  wisp.ok()
+}
+"
+
+  let assert Ok(result) =
+    compile_controller("app/http/controllers/comment_controller", source)
+
+  result.routes_code
+  |> string.contains("int.parse(post_id)")
+  |> should.be_true
+
+  result.routes_code
+  |> string.contains("int.parse(comment_id)")
+  |> should.be_true
+}
+
 // ------------------------------------------------------------- 404 Fallback Test
 
 pub fn generates_404_fallback_test() {

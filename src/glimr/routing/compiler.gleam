@@ -82,7 +82,8 @@ pub fn compile_routes(
       }
     })
 
-  let imports = generate_imports(controller_routes)
+  let needs_int_import = has_int_params(routes)
+  let imports = generate_imports(controller_routes, needs_int_import)
   let used_methods = collect_used_methods(routes)
   let uses_middleware = check_uses_middleware(controller_results)
   let uses_ctx = check_uses_context(routes)
@@ -280,20 +281,27 @@ fn prefix_handler(route: ParsedRoute, module_path: String) -> ParsedRoute {
 ///
 fn generate_imports(
   controller_routes: List(#(String, List(ParsedRoute))),
+  needs_int_import: Bool,
 ) -> List(String) {
-  controller_routes
-  |> list.filter(fn(entry) { !list.is_empty(entry.1) })
-  |> list.map(fn(entry) {
-    let module_path = entry.0
-    let alias = controller_alias(module_path)
-    let default_name = last_segment(module_path)
-    // Use `as` alias when the alias differs from the default module name
-    case alias == default_name {
-      True -> "import " <> module_path
-      False -> "import " <> module_path <> " as " <> alias
-    }
-  })
-  |> list.unique
+  let controller_imports =
+    controller_routes
+    |> list.filter(fn(entry) { !list.is_empty(entry.1) })
+    |> list.map(fn(entry) {
+      let module_path = entry.0
+      let alias = controller_alias(module_path)
+      let default_name = last_segment(module_path)
+      // Use `as` alias when the alias differs from the default module name
+      case alias == default_name {
+        True -> "import " <> module_path
+        False -> "import " <> module_path <> " as " <> alias
+      }
+    })
+    |> list.unique
+
+  case needs_int_import {
+    True -> ["import gleam/int", ..controller_imports]
+    False -> controller_imports
+  }
 }
 
 /// Including `import glimr/http/middleware` when no controller
@@ -919,7 +927,7 @@ fn generate_handler_call(
   let call = handler <> "(" <> string.join(args, ", ") <> ")"
 
   // Wrap with controller middleware if present
-  case controller_middleware {
+  let call = case controller_middleware {
     option.None -> call
     option.Some(alias) -> {
       let handler_uses_ctx = list.any(fn_params, is_context_param)
@@ -934,6 +942,37 @@ fn generate_handler_call(
       <> ".middleware(), ctx)\n          "
       <> call
       <> "\n        }"
+    }
+  }
+
+  // Wrap with int.parse for any Int route params
+  let int_params =
+    fn_params
+    |> list.filter(fn(p) { is_int_param(p) && !is_context_param(p) })
+
+  wrap_int_parses(call, int_params)
+}
+
+/// Wraps a handler call with nested `case int.parse(...)` for
+/// each Int param. If the URL has `/posts/abc` but the handler
+/// expects an Int, we 404 instead of crashing.
+///
+fn wrap_int_parses(call: String, int_params: List(FunctionParam)) -> String {
+  case int_params {
+    [] -> call
+    [param, ..rest] -> {
+      let name = case string.starts_with(param.name, "_") {
+        True -> string.drop_start(param.name, 1)
+        False -> param.name
+      }
+      let inner = wrap_int_parses(call, rest)
+      "case int.parse("
+      <> name
+      <> ") {\n            Ok("
+      <> name
+      <> ") -> "
+      <> inner
+      <> "\n            Error(_) -> response.not_found()\n          }"
     }
   }
 }
@@ -975,6 +1014,29 @@ fn param_to_arg(param: FunctionParam, _route_params: List(String)) -> String {
 fn is_context_param(param: FunctionParam) -> Bool {
   string.starts_with(param.param_type, "Context(")
   || string.starts_with(param.param_type, "context.Context(")
+}
+
+/// Route params come in as strings from the URL pattern match,
+/// but if the controller declares a param as Int we should
+/// parse it automatically. Returning a 404 on parse failure
+/// makes sense because `/posts/abc` genuinely isn't a valid
+/// route when the controller expects `/posts/:id` as Int.
+///
+fn is_int_param(param: FunctionParam) -> Bool {
+  param.param_type == "Int"
+}
+
+/// Checks whether any route in the compiled set has an Int
+/// param, so we know to add `import gleam/int` to the generated
+/// file.
+///
+fn has_int_params(routes: List(ParsedRoute)) -> Bool {
+  list.any(routes, fn(route) {
+    case route {
+      ParsedRoute(params:, ..) -> list.any(params, is_int_param)
+      ParsedRedirect(..) -> False
+    }
+  })
 }
 
 /// Extracts the controller alias from a qualified handler name
