@@ -2,6 +2,7 @@ import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleam/string_tree
 import gleeunit/should
 import glimr/loom/generator
 import glimr/loom/lexer
@@ -15,30 +16,29 @@ pub fn runtime_string_concat_test() {
   |> should.equal("Hello, World!")
 }
 
-pub fn runtime_append_if_true_test() {
-  "Start"
-  |> runtime.append_if(True, fn(acc) { acc <> " - shown" })
-  |> should.equal("Start - shown")
-}
-
-pub fn runtime_append_if_false_test() {
-  "Start"
-  |> runtime.append_if(False, fn(acc) { acc <> " - hidden" })
-  |> should.equal("Start")
-}
-
-pub fn runtime_append_each_test() {
-  ""
-  |> runtime.append_each(["a", "b", "c"], fn(acc, item) {
-    acc <> "[" <> item <> "]"
+pub fn runtime_concat_each_test() {
+  runtime.concat_each(["a", "b", "c"], fn(item) {
+    string_tree.from_strings(["[", item, "]"])
   })
+  |> string_tree.to_string
   |> should.equal("[a][b][c]")
 }
 
-pub fn runtime_append_each_empty_test() {
-  "prefix"
-  |> runtime.append_each([], fn(acc, _item) { acc <> "x" })
-  |> should.equal("prefix")
+pub fn runtime_concat_each_empty_test() {
+  runtime.concat_each([], fn(_item) { string_tree.from_strings(["x"]) })
+  |> string_tree.to_string
+  |> should.equal("")
+}
+
+pub fn runtime_concat_each_with_loop_test() {
+  runtime.concat_each_with_loop(["a", "b"], fn(item, loop) {
+    case loop.last {
+      True -> string_tree.from_strings([item, "(last)"])
+      False -> string_tree.from_strings([item, ","])
+    }
+  })
+  |> string_tree.to_string
+  |> should.equal("a,b(last)")
 }
 
 pub fn runtime_escape_html_test() {
@@ -270,14 +270,14 @@ pub fn compile_component_template_test() {
 
   // Should have html function with slot and attributes params (no view file = no data params)
   generated.code
-  |> string.contains("slot slot: String")
+  |> string.contains("slot slot: StringTree")
   |> should.be_true
 
   generated.code
   |> string.contains("attributes attributes: List(runtime.Attribute)")
   |> should.be_true
 
-  // Should access variables directly
+  // Should access variables directly (untyped falls back to runtime.display)
   generated.code
   |> string.contains("runtime.display(type)")
   |> should.be_true
@@ -286,9 +286,9 @@ pub fn compile_component_template_test() {
   |> string.contains("case dismissible {")
   |> should.be_true
 
-  // Should use slot argument directly
+  // Should use slot in concat pattern
   generated.code
-  |> string.contains("<> slot")
+  |> string.contains("string_tree.concat([")
   |> should.be_true
 }
 
@@ -313,12 +313,12 @@ pub fn compile_layout_template_test() {
 
   // Should have html function with slot param (no view file = no data params)
   generated.code
-  |> string.contains("slot slot: String")
+  |> string.contains("slot slot: StringTree")
   |> should.be_true
 
-  // Should use slot argument directly
+  // Should use slot in concat pattern
   generated.code
-  |> string.contains("<> slot")
+  |> string.contains("string_tree.concat([")
   |> should.be_true
 }
 
@@ -418,9 +418,9 @@ pub fn pipeline_raw_html_not_escaped_test() {
   let generated =
     generator.generate(parsed, "raw", False, dict.new(), dict.new())
 
-  // Raw variable should not call escape
+  // Raw variable should pass through directly in from_strings
   generated.code
-  |> string.contains("<> data.html_content")
+  |> string.contains("from_strings([data.html_content])")
   |> should.be_true
 
   generated.code
@@ -955,7 +955,7 @@ pub fn pipeline_raw_expression_with_function_call_test() {
   let generated =
     generator.generate(parsed, "test", False, dict.new(), dict.new())
   generated.code
-  |> string.contains("<> string.uppercase(name)")
+  |> string.contains("from_strings([string.uppercase(name)])")
   |> should.be_true
 }
 
@@ -1092,10 +1092,10 @@ pub fn pipeline_lm_if_else_with_expressions_test() {
   |> string.contains("case list.length(items) > 0 {")
   |> should.be_true
   generated.code
-  |> string.contains("True -> {")
+  |> string.contains("True -> ")
   |> should.be_true
   generated.code
-  |> string.contains("False -> {")
+  |> string.contains("False -> ")
   |> should.be_true
 }
 

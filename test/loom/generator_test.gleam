@@ -75,7 +75,7 @@ pub fn generate_empty_template_test() {
 
   // Should have html function with no params (no view file = no data params)
   result.code
-  |> string.contains("pub fn render() -> String")
+  |> string.contains("pub fn render() -> StringTree")
   |> should.be_true
 }
 
@@ -83,12 +83,12 @@ pub fn generate_text_only_test() {
   let result = generate(template([TextNode("Hello!")]), "hello", False)
 
   result.code
-  |> string.contains("<> \"Hello!\"")
+  |> string.contains("from_strings([\"Hello!\"])")
   |> should.be_true
 
   // Should have html function with no params (no view file = no data params)
   result.code
-  |> string.contains("pub fn render() -> String")
+  |> string.contains("pub fn render() -> StringTree")
   |> should.be_true
 }
 
@@ -109,7 +109,7 @@ pub fn generate_raw_variable_test() {
 
   // Should pass through directly without escape
   result.code
-  |> string.contains("<> data.html")
+  |> string.contains("from_strings([data.html])")
   |> should.be_true
 
   // Should NOT escape raw variables
@@ -129,14 +129,14 @@ pub fn generate_template_with_slot_test() {
       False,
     )
 
-  // Should use slot argument directly
+  // Should use slot argument directly in concat
   result.code
-  |> string.contains("<> slot")
+  |> string.contains("string_tree.concat([")
   |> should.be_true
 
   // Should have slot parameter
   result.code
-  |> string.contains("slot slot: String")
+  |> string.contains("slot slot: StringTree")
   |> should.be_true
 }
 
@@ -157,7 +157,7 @@ pub fn generate_if_node_test() {
   |> should.be_true
 
   result.code
-  |> string.contains("True -> {")
+  |> string.contains("True -> ")
   |> should.be_true
 }
 
@@ -269,20 +269,20 @@ pub fn generate_if_else_test() {
 
   // Should have True and False branches
   result.code
-  |> string.contains("True -> {")
+  |> string.contains("True -> ")
   |> should.be_true
 
   result.code
-  |> string.contains("False -> {")
+  |> string.contains("False -> ")
   |> should.be_true
 
   // Both branch contents should be present
   result.code
-  |> string.contains("<> \"yes\"")
+  |> string.contains("from_strings([\"yes\"])")
   |> should.be_true
 
   result.code
-  |> string.contains("<> \"no\"")
+  |> string.contains("from_strings([\"no\"])")
   |> should.be_true
 }
 
@@ -311,7 +311,7 @@ pub fn generate_if_elseif_else_test() {
 
   // Should have True branches
   result.code
-  |> string.contains("True -> {")
+  |> string.contains("True -> ")
   |> should.be_true
 }
 
@@ -330,7 +330,7 @@ pub fn generate_if_with_function_call_test() {
   |> should.be_true
 
   result.code
-  |> string.contains("True -> {")
+  |> string.contains("True -> ")
   |> should.be_true
 }
 
@@ -428,9 +428,9 @@ pub fn generate_each_node_test() {
       False,
     )
 
-  // Should use append_each with collection passed through
+  // Should use concat_each with collection passed through
   result.code
-  |> string.contains("runtime.append_each(data.items")
+  |> string.contains("runtime.concat_each(data.items")
   |> should.be_true
 
   // Should access item fields correctly
@@ -491,7 +491,7 @@ pub fn generate_each_tuple_destructuring_test() {
   // Should use temp variable and let binding for tuple destructuring
   // (Gleam doesn't allow pattern matching in fn parameters)
   result.code
-  |> string.contains("fn(acc, item__)")
+  |> string.contains("fn(item__)")
   |> should.be_true
 
   result.code
@@ -530,7 +530,7 @@ pub fn generate_each_triple_tuple_test() {
 
   // Should use temp variable and let binding for tuple destructuring
   result.code
-  |> string.contains("fn(acc, item__)")
+  |> string.contains("fn(item__)")
   |> should.be_true
 
   result.code
@@ -548,12 +548,12 @@ pub fn generate_each_single_item_still_works_test() {
 
   // Single item should NOT be wrapped in tuple
   result.code
-  |> string.contains("fn(acc, item)")
+  |> string.contains("fn(item)")
   |> should.be_true
 
   // Should NOT have tuple syntax
   result.code
-  |> string.contains("fn(acc, #(item))")
+  |> string.contains("fn(#(item))")
   |> should.be_false
 }
 
@@ -575,7 +575,7 @@ pub fn generate_each_with_loop_var_test() {
 
   // Should use append_each_with_loop
   result.code
-  |> string.contains("runtime.append_each_with_loop(users, fn(acc, user, loop)")
+  |> string.contains("runtime.concat_each_with_loop(users, fn(user, loop)")
   |> should.be_true
 }
 
@@ -597,9 +597,7 @@ pub fn generate_each_tuple_with_loop_var_test() {
 
   // Should use append_each_with_loop with temp variable
   result.code
-  |> string.contains(
-    "runtime.append_each_with_loop(pairs, fn(acc, item__, idx)",
-  )
+  |> string.contains("runtime.concat_each_with_loop(pairs, fn(item__, idx)")
   |> should.be_true
 
   // Should destructure the tuple inside the function
@@ -616,14 +614,14 @@ pub fn generate_each_without_loop_uses_simple_append_test() {
       False,
     )
 
-  // Should use simple append_each (not append_each_with_loop)
+  // Should use simple concat_each (not concat_each_with_loop)
   result.code
-  |> string.contains("runtime.append_each(items, fn(acc, item)")
+  |> string.contains("runtime.concat_each(items, fn(item)")
   |> should.be_true
 
-  // Should NOT use append_each_with_loop
+  // Should NOT use concat_each_with_loop
   result.code
-  |> string.contains("append_each_with_loop")
+  |> string.contains("concat_each_with_loop")
   |> should.be_false
 }
 
@@ -641,7 +639,7 @@ pub fn generate_component_test() {
 
   // Should have html function with slot and attributes params
   result.code
-  |> string.contains("slot slot: String")
+  |> string.contains("slot slot: StringTree")
   |> should.be_true
 
   result.code
@@ -653,9 +651,9 @@ pub fn generate_component_test() {
   |> string.contains("runtime.display(title)")
   |> should.be_true
 
-  // Should use slot argument directly
+  // Should use slot argument in concat
   result.code
-  |> string.contains("<> slot")
+  |> string.contains("string_tree.concat([")
   |> should.be_true
 }
 
@@ -667,9 +665,9 @@ pub fn generate_slot_node_in_component_test() {
       True,
     )
 
-  // Should use slot argument directly
+  // Should use slot argument in concat
   result.code
-  |> string.contains("<> slot")
+  |> string.contains("string_tree.concat([")
   |> should.be_true
 }
 
@@ -868,14 +866,14 @@ pub fn generate_named_slot_in_component_test() {
       True,
     )
 
-  // Should use named slot argument directly
+  // Should use named slot argument in concat
   result.code
-  |> string.contains("<> slot_header")
+  |> string.contains(", slot_header,")
   |> should.be_true
 
-  // Should use default slot argument directly
+  // Should use default slot argument in concat
   result.code
-  |> string.contains("<> slot")
+  |> string.contains(", slot])")
   |> should.be_true
 }
 
@@ -918,19 +916,19 @@ pub fn generate_multiple_named_slots_test() {
     )
 
   result.code
-  |> string.contains("<> slot_header")
+  |> string.contains("slot_header")
   |> should.be_true
 
   result.code
-  |> string.contains("<> slot_sidebar")
+  |> string.contains("slot_sidebar")
   |> should.be_true
 
   result.code
-  |> string.contains("<> slot_footer")
+  |> string.contains("slot_footer")
   |> should.be_true
 
   result.code
-  |> string.contains("<> slot")
+  |> string.contains(", slot,")
   |> should.be_true
 }
 
@@ -947,17 +945,17 @@ pub fn generate_slot_with_fallback_test() {
 
   // Should check if slot is empty
   result.code
-  |> string.contains("slot == \"\"")
+  |> string.contains("string_tree.is_empty(slot)")
   |> should.be_true
 
   // Should have fallback content
   result.code
-  |> string.contains("<> \"Default content\"")
+  |> string.contains("from_strings([\"Default content\"])")
   |> should.be_true
 
-  // Should also append slot when not empty
+  // Should use slot when not empty
   result.code
-  |> string.contains("slot != \"\"")
+  |> string.contains("False -> slot")
   |> should.be_true
 }
 
@@ -972,12 +970,12 @@ pub fn generate_named_slot_with_fallback_test() {
 
   // Should check if named slot is empty
   result.code
-  |> string.contains("slot_header == \"\"")
+  |> string.contains("string_tree.is_empty(slot_header)")
   |> should.be_true
 
   // Should have fallback content
   result.code
-  |> string.contains("<> \"Default Header\"")
+  |> string.contains("from_strings([\"Default Header\"])")
   |> should.be_true
 }
 
@@ -998,7 +996,7 @@ pub fn generate_slot_conditional_test() {
 
   // Should transform slot condition
   result.code
-  |> string.contains("slot != \"\"")
+  |> string.contains("!string_tree.is_empty(slot)")
   |> should.be_true
 }
 
@@ -1017,7 +1015,7 @@ pub fn generate_named_slot_conditional_test() {
 
   // Should transform slot.header condition
   result.code
-  |> string.contains("slot_header != \"\"")
+  |> string.contains("!string_tree.is_empty(slot_header)")
   |> should.be_true
 }
 
@@ -1572,7 +1570,7 @@ pub fn generate_loop_index_uses_int_to_string_test() {
   let result = generate(tmpl, "loop_test", False)
 
   result.code
-  |> string.contains("runtime.display(loop.index)")
+  |> string.contains("int.to_string(loop.index)")
   |> should.be_true
 }
 
@@ -1594,7 +1592,7 @@ pub fn generate_loop_iteration_uses_int_to_string_test() {
   let result = generate(tmpl, "loop_test", False)
 
   result.code
-  |> string.contains("runtime.display(loop.iteration)")
+  |> string.contains("int.to_string(loop.iteration)")
   |> should.be_true
 }
 
@@ -1616,7 +1614,7 @@ pub fn generate_loop_count_uses_int_to_string_test() {
   let result = generate(tmpl, "loop_test", False)
 
   result.code
-  |> string.contains("runtime.display(loop.count)")
+  |> string.contains("int.to_string(loop.count)")
   |> should.be_true
 }
 
@@ -1638,7 +1636,7 @@ pub fn generate_loop_remaining_uses_int_to_string_test() {
   let result = generate(tmpl, "loop_test", False)
 
   result.code
-  |> string.contains("runtime.display(loop.remaining)")
+  |> string.contains("int.to_string(loop.remaining)")
   |> should.be_true
 }
 
@@ -1660,7 +1658,7 @@ pub fn generate_loop_first_uses_bool_to_string_test() {
   let result = generate(tmpl, "loop_test", False)
 
   result.code
-  |> string.contains("runtime.display(loop.first)")
+  |> string.contains("bool.to_string(loop.first)")
   |> should.be_true
 }
 
@@ -1682,7 +1680,7 @@ pub fn generate_loop_last_uses_bool_to_string_test() {
   let result = generate(tmpl, "loop_test", False)
 
   result.code
-  |> string.contains("runtime.display(loop.last)")
+  |> string.contains("bool.to_string(loop.last)")
   |> should.be_true
 }
 
@@ -1704,7 +1702,7 @@ pub fn generate_loop_even_uses_bool_to_string_test() {
   let result = generate(tmpl, "loop_test", False)
 
   result.code
-  |> string.contains("runtime.display(loop.even)")
+  |> string.contains("bool.to_string(loop.even)")
   |> should.be_true
 }
 
@@ -1726,7 +1724,7 @@ pub fn generate_loop_odd_uses_bool_to_string_test() {
   let result = generate(tmpl, "loop_test", False)
 
   result.code
-  |> string.contains("runtime.display(loop.odd)")
+  |> string.contains("bool.to_string(loop.odd)")
   |> should.be_true
 }
 
@@ -1749,11 +1747,11 @@ pub fn generate_named_loop_variable_test() {
   let result = generate(tmpl, "loop_test", False)
 
   result.code
-  |> string.contains("runtime.display(user_loop.index)")
+  |> string.contains("int.to_string(user_loop.index)")
   |> should.be_true
 
   result.code
-  |> string.contains("runtime.display(user_loop.first)")
+  |> string.contains("bool.to_string(user_loop.first)")
   |> should.be_true
 }
 
@@ -1784,11 +1782,11 @@ pub fn generate_nested_loops_with_different_loop_vars_test() {
   let result = generate(tmpl, "loop_test", False)
 
   result.code
-  |> string.contains("runtime.display(user_loop.index)")
+  |> string.contains("int.to_string(user_loop.index)")
   |> should.be_true
 
   result.code
-  |> string.contains("runtime.display(post_loop.iteration)")
+  |> string.contains("int.to_string(post_loop.iteration)")
   |> should.be_true
 }
 
@@ -1842,12 +1840,12 @@ pub fn generate_tuple_destructuring_no_inline_pattern_test() {
 
   // Should NOT generate inline pattern matching in fn parameter (invalid Gleam)
   result.code
-  |> string.contains("fn(acc, #(")
+  |> string.contains("fn(#(")
   |> should.be_false
 
   // Should use temp variable instead
   result.code
-  |> string.contains("fn(acc, item__)")
+  |> string.contains("fn(item__)")
   |> should.be_true
 }
 
@@ -1898,12 +1896,12 @@ pub fn generate_tuple_destructuring_four_elements_test() {
 
   // Should NOT use inline pattern
   result.code
-  |> string.contains("fn(acc, #(")
+  |> string.contains("fn(#(")
   |> should.be_false
 
   // Should use temp variable with let binding
   result.code
-  |> string.contains("fn(acc, item__)")
+  |> string.contains("fn(item__)")
   |> should.be_true
 
   result.code
@@ -1933,12 +1931,12 @@ pub fn generate_tuple_destructuring_with_loop_no_inline_pattern_test() {
 
   // Should NOT generate inline pattern matching
   result.code
-  |> string.contains("fn(acc, #(")
+  |> string.contains("fn(#(")
   |> should.be_false
 
   // Should use temp variable with loop var
   result.code
-  |> string.contains("fn(acc, item__, idx)")
+  |> string.contains("fn(item__, idx)")
   |> should.be_true
 
   // Should have let binding
@@ -1968,7 +1966,7 @@ pub fn generate_single_var_no_tuple_syntax_test() {
 
   // Should use direct parameter name
   result.code
-  |> string.contains("fn(acc, item)")
+  |> string.contains("fn(item)")
   |> should.be_true
 
   // Should NOT have tuple pattern
@@ -1978,7 +1976,7 @@ pub fn generate_single_var_no_tuple_syntax_test() {
 
   // Should NOT use temp variable
   result.code
-  |> string.contains("fn(acc, item__)")
+  |> string.contains("fn(item__)")
   |> should.be_false
 
   // Should NOT have let binding for single var
@@ -2026,7 +2024,7 @@ pub fn generate_nested_loops_tuple_destructuring_test() {
 
   // Neither should use inline pattern
   result.code
-  |> string.contains("fn(acc, #(")
+  |> string.contains("fn(#(")
   |> should.be_false
 }
 

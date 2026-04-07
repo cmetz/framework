@@ -15,7 +15,9 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/list
+import gleam/result
 import gleam/string
+import gleam/string_tree.{type StringTree}
 import glimr/loom/loom.{
   type Dynamic, type LiveTree, DynList, DynString, DynTree, LiveTree,
 }
@@ -60,6 +62,7 @@ pub type Loop {
 /// string concatenation that integrates cleanly with Gleam's
 /// pipe syntax, keeping generated code readable and consistent.
 ///
+@deprecated("Re-compile your templates with `./glimr loom_compile`")
 pub fn append(acc: String, value: String) -> String {
   acc <> value
 }
@@ -70,6 +73,7 @@ pub fn append(acc: String, value: String) -> String {
 /// template body only executes when the condition holds,
 /// avoiding unnecessary work.
 ///
+@deprecated("Re-compile your templates with `./glimr loom_compile`")
 pub fn append_if(
   acc: String,
   condition: Bool,
@@ -87,6 +91,7 @@ pub fn append_if(
 /// allocating intermediate string lists that would need joining
 /// afterward.
 ///
+@deprecated("Re-compile your templates with `./glimr loom_compile`")
 pub fn append_each(
   acc: String,
   items: List(item),
@@ -101,6 +106,7 @@ pub fn append_each(
 /// callback avoids repeated list.length calls and keeps the
 /// metadata fresh per item.
 ///
+@deprecated("Re-compile your templates with `./glimr loom_compile`")
 pub fn append_each_with_loop(
   acc: String,
   items: List(item),
@@ -108,18 +114,84 @@ pub fn append_each_with_loop(
 ) -> String {
   let count = list.length(items)
   list.index_fold(items, acc, fn(acc, item, index) {
-    let loop =
-      Loop(
-        index: index,
-        iteration: index + 1,
-        first: index == 0,
-        last: index == count - 1,
-        even: index % 2 == 0,
-        odd: index % 2 != 0,
-        count: count,
-        remaining: count - index - 1,
-      )
-    render_fn(acc, item, loop)
+    render_fn(acc, item, make_loop(index, count))
+  })
+}
+
+/// The old fold-based `append_each` forced every iteration to
+/// flatten into a single String, defeating BEAM iodata. Mapping
+/// each item to a StringTree and concatenating them lets the
+/// runtime keep everything as iodata until the final response
+/// write — a big win for lists of any size.
+///
+pub fn concat_each(
+  items: List(item),
+  render_fn: fn(item) -> StringTree,
+) -> StringTree {
+  string_tree.concat(list.map(items, render_fn))
+}
+
+/// Same idea as `concat_each` but for templates that use
+/// `loop.index`, `loop.first`, etc. in their l-for body. Builds
+/// the Loop record once per iteration so the render function
+/// can reference metadata without computing it itself.
+///
+pub fn concat_each_with_loop(
+  items: List(item),
+  render_fn: fn(item, Loop) -> StringTree,
+) -> StringTree {
+  let count = list.length(items)
+  string_tree.concat(
+    list.index_map(items, fn(item, index) {
+      render_fn(item, make_loop(index, count))
+    }),
+  )
+}
+
+/// Transitional helper from the intermediate StringTree
+/// refactor that still used fold-based accumulation. Now
+/// superseded by the concat code path which generates inline
+/// case expressions instead. Keeping it around so templates
+/// compiled during the transition don't break.
+///
+@deprecated("Re-compile your templates with `./glimr loom_compile`")
+pub fn append_if_tree(
+  acc: StringTree,
+  condition: Bool,
+  render_fn: fn(StringTree) -> StringTree,
+) -> StringTree {
+  case condition {
+    True -> render_fn(acc)
+    False -> acc
+  }
+}
+
+/// Transitional fold-based each for StringTree, now replaced by
+/// `concat_each` which maps instead of folding. Kept for
+/// templates compiled during the intermediate refactor.
+///
+@deprecated("Re-compile your templates with `./glimr loom_compile`")
+pub fn append_each_tree(
+  acc: StringTree,
+  items: List(item),
+  render_fn: fn(StringTree, item) -> StringTree,
+) -> StringTree {
+  list.fold(items, acc, render_fn)
+}
+
+/// Transitional fold-based each with loop metadata for
+/// StringTree, now replaced by `concat_each_with_loop`. Kept
+/// for templates compiled during the intermediate refactor.
+///
+@deprecated("Re-compile your templates with `./glimr loom_compile`")
+pub fn append_each_with_loop_tree(
+  acc: StringTree,
+  items: List(item),
+  render_fn: fn(StringTree, item, Loop) -> StringTree,
+) -> StringTree {
+  let count = list.length(items)
+  list.index_fold(items, acc, fn(acc, item, index) {
+    render_fn(acc, item, make_loop(index, count))
   })
 }
 
@@ -139,6 +211,7 @@ pub fn escape(value: String) -> String {
 /// conversions for Int, Bool, or custom types — the runtime
 /// handles it transparently.
 ///
+@deprecated("Re-compile your templates with `./glimr loom_compile`")
 pub fn to_string(value: a) -> String {
   let s = string.inspect(value)
   // string.inspect wraps strings in quotes - strip them
@@ -154,8 +227,14 @@ pub fn to_string(value: a) -> String {
 /// keeping the generated output compact while ensuring XSS
 /// safety by default.
 ///
+@deprecated("Re-compile your templates with `./glimr loom_compile`")
 pub fn display(value: a) -> String {
-  to_string(value) |> escape
+  let s = string.inspect(value)
+  let s = case string.starts_with(s, "\"") && string.ends_with(s, "\"") {
+    True -> string.slice(s, 1, string.length(s) - 2)
+    False -> s
+  }
+  escape(s)
 }
 
 /// Templates often need to toggle CSS classes based on state
@@ -273,23 +352,7 @@ pub fn live_component_wrapper(
   module_name: String,
   props_json: String,
 ) -> String {
-  let ws_url = live_ws_url()
-  let assert Ok(app_key) = env.get_string("APP_KEY")
-  let payload = module_name <> ":" <> props_json
-
-  let token = {
-    crypto.sign_message(<<payload:utf8>>, <<app_key:utf8>>, crypto.Sha256)
-  }
-
-  "<div data-l-live=\""
-  <> module_name
-  <> "\" data-l-ws=\""
-  <> ws_url
-  <> "\" data-l-token=\""
-  <> token
-  <> "\">"
-  <> html
-  <> "</div>"
+  live_open_div(module_name, props_json) <> html <> "</div>"
 }
 
 /// Live templates render through layout components that produce
@@ -303,83 +366,33 @@ pub fn inject_live_wrapper(
   module_name: String,
   props_json: String,
 ) -> String {
-  let ws_url = live_ws_url()
-  let assert Ok(app_key) = env.get_string("APP_KEY")
-  let payload = module_name <> ":" <> props_json
-
-  let token = {
-    crypto.sign_message(<<payload:utf8>>, <<app_key:utf8>>, crypto.Sha256)
-  }
-
-  let open_div =
-    "<div data-l-live=\""
-    <> module_name
-    <> "\" data-l-ws=\""
-    <> ws_url
-    <> "\" data-l-token=\""
-    <> token
-    <> "\">"
-
+  let open_div = live_open_div(module_name, props_json)
   // Inject live container after <body...>
   let html = inject_after_body_open(html, open_div)
   // Close the container before </body>
   string.replace(html, "</body>", "</div></body>")
 }
 
-// ------------------------------------------------------------- Tree Functions
+/// Live templates now produce StringTree, but injecting the
+/// live container still needs to find the `<body>` tag via
+/// string splitting. Converting to String here is unavoidable
+/// for the split, but the result goes straight back to
+/// StringTree so the rest of the response stays iodata.
+///
+pub fn inject_live_wrapper_tree(
+  html: StringTree,
+  module_name: String,
+  props_json: String,
+) -> StringTree {
+  inject_live_wrapper(string_tree.to_string(html), module_name, props_json)
+  |> string_tree.from_string
+}
 
 /// Interleave statics and dynamics into a single HTML string.
 /// statics[0] + flatten(dynamics[0]) + statics[1] + ...
 ///
 pub fn flatten_tree(tree: LiveTree) -> String {
   flatten_tree_helper(tree.statics, tree.dynamics, "")
-}
-
-fn flatten_tree_helper(
-  statics: List(String),
-  dynamics: List(Dynamic),
-  acc: String,
-) -> String {
-  case statics, dynamics {
-    [s], [] -> acc <> s
-    [s, ..rest_s], [d, ..rest_d] ->
-      flatten_tree_helper(rest_s, rest_d, acc <> s <> flatten_dynamic(d))
-    _, _ -> acc
-  }
-}
-
-fn flatten_dynamic(dyn: Dynamic) -> String {
-  case dyn {
-    DynString(s) -> s
-    DynTree(tree) -> flatten_tree(tree)
-    DynList(trees) -> list.map(trees, flatten_tree) |> string.join("")
-  }
-}
-
-/// Serialize a LiveTree to the JSON wire format for initial
-/// send. Format: { "s": [...statics], "d": [...dynamics] }
-///
-pub fn tree_to_json(tree: LiveTree) -> String {
-  json.to_string(tree_to_json_value(tree))
-}
-
-fn tree_to_json_value(tree: LiveTree) -> json.Json {
-  json.object([
-    #("s", json.array(tree.statics, json.string)),
-    #(
-      "d",
-      json.preprocessed_array(list.map(tree.dynamics, dynamic_to_json_value)),
-    ),
-  ])
-}
-
-fn dynamic_to_json_value(dyn: Dynamic) -> json.Json {
-  case dyn {
-    DynString(s) -> json.string(s)
-    DynTree(tree) -> tree_to_json_value(tree)
-    DynList(trees) ->
-      json.preprocessed_array(list.map(trees, tree_to_json_value))
-  }
 }
 
 /// Compare two JSON-serialized trees and return a JSON diff
@@ -399,18 +412,48 @@ pub fn diff_tree_json(old_json: String, new_json: String) -> String {
   }
 }
 
+/// Tree mode's equivalent of `concat_each`. Each item renders
+/// to its own LiveTree, and the list of trees becomes a DynList
+/// dynamic so the diff algorithm can compare items individually
+/// on re-render.
+///
+pub fn map_each(items: List(item), render_fn: fn(item) -> LiveTree) -> Dynamic {
+  DynList(list.map(items, render_fn))
+}
+
+/// Tree mode's equivalent of `concat_each_with_loop`. Same as
+/// `map_each` but also computes loop metadata per item for
+/// templates that reference `loop.index`, `loop.first`, etc.
+/// inside their l-for body.
+///
+pub fn map_each_with_loop(
+  items: List(item),
+  render_fn: fn(item, Loop) -> LiveTree,
+) -> Dynamic {
+  let count = list.length(items)
+  DynList(
+    list.index_map(items, fn(item, index) {
+      render_fn(item, make_loop(index, count))
+    }),
+  )
+}
+
+/// Serialize a LiveTree to the JSON wire format for initial
+/// send. Format: { "s": [...statics], "d": [...dynamics] }
+///
+pub fn tree_to_json(tree: LiveTree) -> String {
+  json.to_string(tree_to_json_value(tree))
+}
+
+// ------------------------------------------------------------- Private Functions
+
 /// Diff two LiveTrees structurally and return the diff as JSON.
 ///
 fn diff_trees_to_json(old: LiveTree, new: LiveTree) -> String {
   let diff_pairs = diff_dynamics(old.dynamics, new.dynamics, 0, [])
   case diff_pairs {
     [] -> "{}"
-    _ ->
-      json.to_string(
-        json.object(
-          list.map(diff_pairs, fn(pair) { #(int.to_string(pair.0), pair.1) }),
-        ),
-      )
+    _ -> json.to_string(indexed_pairs_to_json(diff_pairs))
   }
 }
 
@@ -458,14 +501,7 @@ fn diff_single_dynamic(old: Dynamic, new: Dynamic) -> Result(json.Json, Nil) {
             _ ->
               Ok(
                 json.object([
-                  #(
-                    "d",
-                    json.object(
-                      list.map(inner_diff, fn(pair) {
-                        #(int.to_string(pair.0), pair.1)
-                      }),
-                    ),
-                  ),
+                  #("d", indexed_pairs_to_json(inner_diff)),
                 ]),
               )
           }
@@ -482,14 +518,7 @@ fn diff_single_dynamic(old: Dynamic, new: Dynamic) -> Result(json.Json, Nil) {
           let item_diffs = diff_list_items(old_trees, new_trees, 0, [])
           case item_diffs {
             [] -> Error(Nil)
-            _ ->
-              Ok(
-                json.object(
-                  list.map(item_diffs, fn(pair) {
-                    #(int.to_string(pair.0), pair.1)
-                  }),
-                ),
-              )
+            _ -> Ok(indexed_pairs_to_json(item_diffs))
           }
         }
       }
@@ -519,14 +548,7 @@ fn diff_list_items(
               #(
                 index,
                 json.object([
-                  #(
-                    "d",
-                    json.object(
-                      list.map(inner_diff, fn(pair) {
-                        #(int.to_string(pair.0), pair.1)
-                      }),
-                    ),
-                  ),
+                  #("d", indexed_pairs_to_json(inner_diff)),
                 ]),
               ),
               ..acc
@@ -545,10 +567,7 @@ fn diff_list_items(
 /// scanning.
 ///
 fn parse_tree_json(input: String) -> Result(LiveTree, Nil) {
-  case json.parse(input, tree_decoder()) {
-    Ok(tree) -> Ok(tree)
-    Error(_) -> Error(Nil)
-  }
+  json.parse(input, tree_decoder()) |> result.replace_error(Nil)
 }
 
 fn tree_decoder() -> decode.Decoder(LiveTree) {
@@ -571,39 +590,45 @@ fn dynamic_decoder() -> decode.Decoder(Dynamic) {
   )
 }
 
-/// Like append_each but returns a DynList for tree mode.
-///
-pub fn map_each(items: List(item), render_fn: fn(item) -> LiveTree) -> Dynamic {
-  DynList(list.map(items, render_fn))
+fn flatten_tree_helper(
+  statics: List(String),
+  dynamics: List(Dynamic),
+  acc: String,
+) -> String {
+  case statics, dynamics {
+    [s], [] -> acc <> s
+    [s, ..rest_s], [d, ..rest_d] ->
+      flatten_tree_helper(rest_s, rest_d, acc <> s <> flatten_dynamic(d))
+    _, _ -> acc
+  }
 }
 
-/// Like append_each_with_loop but returns a DynList for tree
-/// mode.
-///
-pub fn map_each_with_loop(
-  items: List(item),
-  render_fn: fn(item, Loop) -> LiveTree,
-) -> Dynamic {
-  let count = list.length(items)
-  DynList(
-    list.index_map(items, fn(item, index) {
-      let loop =
-        Loop(
-          index: index,
-          iteration: index + 1,
-          first: index == 0,
-          last: index == count - 1,
-          even: index % 2 == 0,
-          odd: index % 2 != 0,
-          count: count,
-          remaining: count - index - 1,
-        )
-      render_fn(item, loop)
-    }),
-  )
+fn flatten_dynamic(dyn: Dynamic) -> String {
+  case dyn {
+    DynString(s) -> s
+    DynTree(tree) -> flatten_tree(tree)
+    DynList(trees) -> list.map(trees, flatten_tree) |> string.join("")
+  }
 }
 
-// ------------------------------------------------------------- Private Functions
+fn tree_to_json_value(tree: LiveTree) -> json.Json {
+  json.object([
+    #("s", json.array(tree.statics, json.string)),
+    #(
+      "d",
+      json.preprocessed_array(list.map(tree.dynamics, dynamic_to_json_value)),
+    ),
+  ])
+}
+
+fn dynamic_to_json_value(dyn: Dynamic) -> json.Json {
+  case dyn {
+    DynString(s) -> json.string(s)
+    DynTree(tree) -> tree_to_json_value(tree)
+    DynList(trees) ->
+      json.preprocessed_array(list.map(trees, tree_to_json_value))
+  }
+}
 
 /// Classes from both the component and parent should be visible
 /// in the DOM — dropping either would break styling. Appending
@@ -614,16 +639,18 @@ fn merge_class_attribute(
   attrs: List(Attribute),
   extra_class: String,
 ) -> List(Attribute) {
-  let has_class = list.any(attrs, fn(a) { attr_name(a) == "class" })
-  case has_class {
-    True ->
-      list.map(attrs, fn(a) {
-        case a {
-          Attribute("class", value) ->
-            Attribute("class", value <> " " <> extra_class)
-          _ -> a
-        }
-      })
+  let #(result, found) =
+    list.fold(attrs, #([], False), fn(acc, a) {
+      case a {
+        Attribute("class", value) -> #(
+          [Attribute("class", value <> " " <> extra_class), ..acc.0],
+          True,
+        )
+        _ -> #([a, ..acc.0], acc.1)
+      }
+    })
+  case found {
+    True -> list.reverse(result)
     False -> list.append(attrs, [Attribute("class", extra_class)])
   }
 }
@@ -638,18 +665,22 @@ fn merge_style_attribute(
   attrs: List(Attribute),
   extra_style: String,
 ) -> List(Attribute) {
-  let has_style = list.any(attrs, fn(a) { attr_name(a) == "style" })
-  case has_style {
+  let #(result, found) =
+    list.fold(attrs, #([], False), fn(acc, a) {
+      case a {
+        Attribute("style", value) -> #(
+          [
+            Attribute("style", ensure_semicolon(value) <> " " <> extra_style),
+            ..acc.0
+          ],
+          True,
+        )
+        _ -> #([a, ..acc.0], acc.1)
+      }
+    })
+  case found {
+    True -> list.reverse(result)
     False -> list.append(attrs, [Attribute("style", extra_style)])
-    True -> {
-      list.map(attrs, fn(a) {
-        case a {
-          Attribute("style", value) ->
-            Attribute("style", ensure_semicolon(value) <> " " <> extra_style)
-          _ -> a
-        }
-      })
-    }
   }
 }
 
@@ -664,15 +695,15 @@ fn override_attribute(
   new_attr: Attribute,
 ) -> List(Attribute) {
   let new_name = attr_name(new_attr)
-  let has_attr = list.any(attrs, fn(a) { attr_name(a) == new_name })
-  case has_attr {
-    True ->
-      list.map(attrs, fn(a) {
-        case attr_name(a) == new_name {
-          True -> new_attr
-          False -> a
-        }
-      })
+  let #(result, found) =
+    list.fold(attrs, #([], False), fn(acc, a) {
+      case attr_name(a) == new_name {
+        True -> #([new_attr, ..acc.0], True)
+        False -> #([a, ..acc.0], acc.1)
+      }
+    })
+  case found {
+    True -> list.reverse(result)
     False -> list.append(attrs, [new_attr])
   }
 }
@@ -688,12 +719,55 @@ fn attr_name(attr: Attribute) -> String {
   }
 }
 
-/// Style values may or may not end with a semicolon, but
-/// concatenating two style strings without one between them
-/// produces invalid CSS. Normalizing the trailing semicolon
-/// here prevents broken styles when merging component and
-/// parent style attributes.
+/// The diff format uses integer keys ("0", "1", ...) to
+/// identify which dynamic slot changed. This pattern repeats in
+/// three places — tree diffs, list diffs, and nested tree diffs
+/// — so factoring it out keeps each call site a one-liner.
 ///
+fn indexed_pairs_to_json(pairs: List(#(Int, json.Json))) -> json.Json {
+  json.object(list.map(pairs, fn(pair) { #(int.to_string(pair.0), pair.1) }))
+}
+
+/// Both `live_component_wrapper` and `inject_live_wrapper` need
+/// the same signed `<div data-l-live="...">` opener. Generating
+/// it once here keeps the signing logic and attribute layout in
+/// a single place.
+///
+fn live_open_div(module_name: String, props_json: String) -> String {
+  let ws_url = live_ws_url()
+  let assert Ok(app_key) = env.get_string("APP_KEY")
+  let payload = module_name <> ":" <> props_json
+  let token =
+    crypto.sign_message(<<payload:utf8>>, <<app_key:utf8>>, crypto.Sha256)
+
+  "<div data-l-live=\""
+  <> module_name
+  <> "\" data-l-ws=\""
+  <> ws_url
+  <> "\" data-l-token=\""
+  <> token
+  <> "\">"
+}
+
+/// Every loop helper — `append_each_with_loop`,
+/// `concat_each_with_loop`, and `map_each_with_loop` — needs
+/// the same set of derived fields (iteration, first, last,
+/// even, odd, remaining). Building the Loop record in one place
+/// avoids six copies of the same arithmetic.
+///
+fn make_loop(index: Int, count: Int) -> Loop {
+  Loop(
+    index: index,
+    iteration: index + 1,
+    first: index == 0,
+    last: index == count - 1,
+    even: index % 2 == 0,
+    odd: index % 2 != 0,
+    count: count,
+    remaining: count - index - 1,
+  )
+}
+
 fn ensure_semicolon(value: String) -> String {
   let trimmed = string.trim_end(value)
   case string.ends_with(trimmed, ";") {
