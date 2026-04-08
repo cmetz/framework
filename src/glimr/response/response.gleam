@@ -13,6 +13,7 @@ import gleam/http.{type Method}
 import gleam/int
 import gleam/json.{type Json}
 import gleam/string
+import gleam/string_tree.{type StringTree}
 import glimr/http/http.{type Response} as _glimr_http
 import simplifile
 import wisp
@@ -58,6 +59,23 @@ pub type ResponseFormat {
 ///
 pub fn html(content: String, status: Int) -> Response {
   wisp.html_response(content, status)
+}
+
+/// Loom templates return StringTree for efficient rendering.
+/// This passes the tree directly to the response body without
+/// flattening into a String first, avoiding O(n²) memory usage
+/// for large pages.
+///
+/// *Example:*
+///
+/// ```gleam
+/// response.loom(welcome.render(), 200)
+/// ```
+///
+pub fn loom(content: StringTree, status: Int) -> Response {
+  wisp.response(status)
+  |> wisp.set_header("content-type", "text/html; charset=utf-8")
+  |> wisp.string_tree_body(content)
 }
 
 /// Loading HTML from a file keeps large page content out of

@@ -85,6 +85,27 @@ pub type UsedSpecialVars {
 type HandlerLookup =
   Dict(#(String, String, Int), String)
 
+/// The generated code uses `string_tree.concat([...])` at the
+/// top level, but consecutive string expressions like text
+/// nodes and escaped variables can be batched into a single
+/// `string_tree.from_strings([...])` call instead of wrapping
+/// each one individually. This type lets the generator collect
+/// items first, then merge adjacent string batches before
+/// emitting the final expression.
+///
+type ConcatItem {
+  /// Plain string expressions that can be grouped into a single
+  /// `from_strings([...])` call — text nodes, escaped variables,
+  /// attribute renderers, etc.
+  ///
+  StringBatch(exprs: List(String))
+  /// Expressions that already produce a StringTree — case blocks,
+  /// slots, components, concat_each — and must remain as separate
+  /// items in `concat([...])`.
+  ///
+  TreeExpr(code: String)
+}
+
 // ------------------------------------------------------------- Public Functions
 
 /// Public entry point for the code generator. Wraps the
@@ -390,8 +411,6 @@ fn generate_module(
   }
   let handler_lookup = build_handler_lookup(handlers)
 
-  let imports = generate_imports(template, component_data, handlers)
-
   let html_fn =
     generate_html_function(
       template,
@@ -416,6 +435,10 @@ fn generate_module(
         handler_lookup,
       )
   }
+
+  let generated_code = html_fn <> live_fns
+  let imports =
+    generate_imports(template, component_data, handlers, generated_code)
 
   string.join([header, imports, "", html_fn, live_fns], "\n")
 }
@@ -1033,9 +1056,48 @@ fn generate_imports(
   template: Template,
   component_data: ComponentDataMap,
   handlers: List(#(String, handler_parser.Handler)),
+  generated_code: String,
 ) -> String {
-  // Base imports - runtime is always needed
-  let base_imports = ["import glimr/loom/runtime"]
+  // Base imports always needed
+  let base_imports = [
+    "import gleam/string_tree.{type StringTree}",
+    "import glimr/loom/runtime",
+  ]
+
+  // Conditional imports based on what the generated code actually uses,
+  // but skip any that the user already declared via @import
+  let user_import_set =
+    set.from_list(
+      list.map(template.imports, fn(imp) {
+        // Normalize: "gleam/int" and "gleam/int.{to_string}" both start with "gleam/int"
+        case string.split_once(imp, ".{") {
+          Ok(#(module, _)) -> module
+          Error(_) -> imp
+        }
+      }),
+    )
+
+  let bool_import = case
+    string.contains(generated_code, "bool.to_string(")
+    && !set.contains(user_import_set, "gleam/bool")
+  {
+    True -> ["import gleam/bool"]
+    False -> []
+  }
+  let float_import = case
+    string.contains(generated_code, "float.to_string(")
+    && !set.contains(user_import_set, "gleam/float")
+  {
+    True -> ["import gleam/float"]
+    False -> []
+  }
+  let int_import = case
+    string.contains(generated_code, "int.to_string(")
+    && !set.contains(user_import_set, "gleam/int")
+  {
+    True -> ["import gleam/int"]
+    False -> []
+  }
 
   // For live templates, import additional modules for handle/render JSON wrappers
   let live_imports = case template.is_live {
@@ -1085,7 +1147,15 @@ fn generate_imports(
     })
 
   string.join(
-    list.flatten([base_imports, live_imports, user_imports, component_imports]),
+    list.flatten([
+      bool_import,
+      float_import,
+      int_import,
+      base_imports,
+      live_imports,
+      user_imports,
+      component_imports,
+    ]),
     "\n",
   )
 }
@@ -1187,29 +1257,35 @@ fn generate_html_function(
   // Build function parameters
   let params = generate_function_params(template, is_component)
 
-  let body =
-    generate_nodes_code(
+  // Build prop_types dict for type-aware conversions
+  let prop_types = dict.from_list(template.props)
+
+  let body_items =
+    generate_nodes_concat_items(
       nodes,
-      1,
+      prop_types,
       component_data,
       component_slots,
+      set.new(),
       handler_lookup,
     )
 
+  let body_code = items_to_code(body_items)
+
   // For live templates (non-components), wrap with live container
-  // Live wrapper includes its own "" so we don't add one
   case template.is_live && !is_component {
     True -> {
-      let wrapped = generate_live_wrapper(body, module_name, template.props)
-      "pub fn render(" <> params <> ") -> String {\n" <> wrapped <> "}\n"
+      let wrapped =
+        generate_live_wrapper(body_code, module_name, template.props)
+      "pub fn render(" <> params <> ") -> StringTree {\n" <> wrapped <> "}\n"
     }
     False -> {
       "pub fn render("
       <> params
-      <> ") -> String {\n"
-      <> "  \"\"\n"
-      <> body
-      <> "}\n"
+      <> ") -> StringTree {\n"
+      <> "  "
+      <> body_code
+      <> "\n}\n"
     }
   }
 }
@@ -1240,12 +1316,12 @@ fn generate_live_wrapper(
     }
   }
 
-  // Wrap body in a block to ensure proper grouping, then pipe to inject_live_wrapper
+  // Pipe the concat expression to inject_live_wrapper_tree
   // This finds the <body> tag and injects the container there at runtime
-  "  {\n  \"\"\n"
+  "  "
   <> body
-  <> "  }\n"
-  <> "  |> runtime.inject_live_wrapper(\""
+  <> "\n"
+  <> "  |> runtime.inject_live_wrapper_tree(\""
   <> module_name
   <> "\", "
   <> props_json_expr
@@ -1269,7 +1345,7 @@ fn generate_function_params(template: Template, is_component: Bool) -> String {
 
   // Slot parameters from template
   let slot_params = case has_default_slot(template.nodes) {
-    True -> ["slot slot: String"]
+    True -> ["slot slot: StringTree"]
     False -> []
   }
 
@@ -1283,7 +1359,7 @@ fn generate_function_params(template: Template, is_component: Bool) -> String {
       <> to_field_name(name)
       <> " slot_"
       <> to_field_name(name)
-      <> ": String"
+      <> ": StringTree"
     })
 
   // Attributes parameter for components
@@ -1341,441 +1417,212 @@ fn separate_slot_defs(
   #(list.reverse(default_nodes), list.reverse(slot_defs))
 }
 
-/// Gleam guards don't support function calls, but template
-/// conditions often call functions (e.g., list.is_empty). Using
-/// `case condition { True -> ... False -> ... }` instead of
-/// guards allows arbitrary expressions in conditions while
-/// still producing exhaustive matches.
-///
-fn generate_if_branches(
-  branches: List(#(Option(String), Int, List(parser.Node))),
-  indent: Int,
-  component_data: ComponentDataMap,
-  component_slots: ComponentSlotMap,
-  loop_vars: Set(String),
-  handler_lookup: HandlerLookup,
-) -> String {
-  let pad = string.repeat("  ", indent)
-  generate_if_branches_recursive(
-    branches,
-    indent,
-    pad,
-    True,
-    component_data,
-    component_slots,
-    loop_vars,
-    handler_lookup,
-  )
-}
-
-/// Else-if chains become nested case expressions where each
-/// False branch contains the next condition's case. This
-/// recursive structure mirrors the if/else-if/else chain
-/// naturally, producing correctly indented and exhaustive Gleam
-/// code for any chain length.
-///
-fn generate_if_branches_recursive(
-  branches: List(#(Option(String), Int, List(parser.Node))),
-  indent: Int,
-  pad: String,
-  is_root: Bool,
-  component_data: ComponentDataMap,
-  component_slots: ComponentSlotMap,
-  loop_vars: Set(String),
-  handler_lookup: HandlerLookup,
-) -> String {
-  // The root call is part of a string concatenation chain (<> case ...),
-  // but nested else-if calls are case arm values (case ... without <>).
-  let prefix = case is_root {
-    True -> "<> case "
-    False -> "case "
-  }
-  case branches {
-    [] -> ""
-    [#(None, _line, body), ..] -> {
-      // Else branch - just output the body (ignore any remaining branches)
-      let body_code =
-        generate_nodes_code_with_loop_vars(
-          body,
-          indent + 2,
-          component_data,
-          component_slots,
-          loop_vars,
-          handler_lookup,
-        )
-      case is_root {
-        True ->
-          pad <> "<> {\n" <> pad <> "  \"\"\n" <> body_code <> pad <> "}\n"
-        False -> pad <> "{\n" <> pad <> "  \"\"\n" <> body_code <> pad <> "}\n"
-      }
-    }
-    [#(Some(cond), _line, body), ..rest] -> {
-      let transformed_cond = transform_slot_condition(cond)
-      let body_code =
-        generate_nodes_code_with_loop_vars(
-          body,
-          indent + 2,
-          component_data,
-          component_slots,
-          loop_vars,
-          handler_lookup,
-        )
-      let else_code = case rest {
-        [] ->
-          // No else branch - output empty string
-          pad <> "    False -> \"\"\n"
-        [#(None, _, else_body)] -> {
-          // Simple else branch
-          let else_body_code =
-            generate_nodes_code_with_loop_vars(
-              else_body,
-              indent + 2,
-              component_data,
-              component_slots,
-              loop_vars,
-              handler_lookup,
-            )
-          pad
-          <> "    False -> {\n"
-          <> pad
-          <> "      \"\"\n"
-          <> else_body_code
-          <> pad
-          <> "    }\n"
-        }
-        _ -> {
-          // More branches (else-if) - recurse
-          let nested =
-            generate_if_branches_recursive(
-              rest,
-              indent + 2,
-              pad <> "    ",
-              False,
-              component_data,
-              component_slots,
-              loop_vars,
-              handler_lookup,
-            )
-          pad <> "    False ->\n" <> nested
-        }
-      }
-      pad
-      <> prefix
-      <> transformed_cond
-      <> " {\n"
-      <> pad
-      <> "    True -> {\n"
-      <> pad
-      <> "      \"\"\n"
-      <> body_code
-      <> pad
-      <> "    }\n"
-      <> else_code
-      <> pad
-      <> "  }\n"
-    }
-  }
-}
-
 /// Template authors write `l-if="slot"` or `l-if="slot.header"`
-/// to conditionally render based on slot content, but slots are
-/// String parameters in generated code. Transforming these to
-/// emptiness checks lets authors use intuitive slot references
-/// without knowing the String representation.
+/// to conditionally render based on slot content. Slots are
+/// StringTree parameters in generated code, so these get
+/// rewritten to `!string_tree.is_empty(slot)` checks. Without
+/// this transform, authors would need to know the internal slot
+/// representation to write conditionals.
 ///
 fn transform_slot_condition(condition: String) -> String {
   case string.trim(condition) {
-    "slot" -> "slot != \"\""
-    "slot." <> name -> "slot_" <> to_field_name(name) <> " != \"\""
+    "slot" -> "!string_tree.is_empty(slot)"
+    "slot." <> name ->
+      "!string_tree.is_empty(slot_" <> to_field_name(name) <> ")"
     _ -> condition
   }
 }
 
-/// Convenience entry point for node code generation when no
-/// loop variables are in scope (i.e., at the top level). Avoids
-/// passing an empty set through every call site that doesn't
-/// involve l-for loops.
+/// Walk every node in the template and collect ConcatItems.
+/// Each node may produce one or several items — an element like
+/// `<div>hello</div>` emits multiple StringBatch items for the
+/// open tag, text, and close tag. Flat-mapping keeps the output
+/// flat so adjacent StringBatch items can be merged later by
+/// `items_to_code`.
 ///
-fn generate_nodes_code(
+fn generate_nodes_concat_items(
   nodes: List(Node),
-  indent: Int,
-  component_data: ComponentDataMap,
-  component_slots: ComponentSlotMap,
-  handler_lookup: HandlerLookup,
-) -> String {
-  generate_nodes_code_with_loop_vars(
-    nodes,
-    indent,
-    component_data,
-    component_slots,
-    set.new(),
-    handler_lookup,
-  )
-}
-
-/// Loop variables have properties like loop.index (Int) and
-/// loop.first (Bool) that need type conversion when used in
-/// string concatenation. Threading the set of active loop
-/// variables through code generation lets the emitter insert
-/// the right conversion calls.
-///
-fn generate_nodes_code_with_loop_vars(
-  nodes: List(Node),
-  indent: Int,
+  prop_types: Dict(String, String),
   component_data: ComponentDataMap,
   component_slots: ComponentSlotMap,
   loop_vars: Set(String),
   handler_lookup: HandlerLookup,
-) -> String {
-  nodes
-  |> list.map(fn(node) {
-    generate_node_code_with_loop_vars(
+) -> List(ConcatItem) {
+  list.flat_map(nodes, fn(node) {
+    generate_node_concat_items(
       node,
-      indent,
+      prop_types,
       component_data,
       component_slots,
       loop_vars,
       handler_lookup,
     )
   })
-  |> string.join("")
 }
 
-/// Each AST node type maps to a different code generation
-/// strategy — text becomes string literals, variables become
-/// runtime.display calls, slots become parameter references,
-/// and components become function calls. Exhaustive pattern
-/// matching ensures every node type produces valid Gleam code.
+/// Decide what kind of code each AST node produces. Anything
+/// that resolves to a plain string at runtime — text, escaped
+/// variables, attribute expressions — becomes a StringBatch so
+/// it can be grouped with its neighbours. Nodes that inherently
+/// produce a StringTree (case blocks, slots, each loops,
+/// component renders) become TreeExpr items that break the
+/// batching boundary.
 ///
-fn generate_node_code_with_loop_vars(
+fn generate_node_concat_items(
   node: Node,
-  indent: Int,
+  prop_types: Dict(String, String),
   component_data: ComponentDataMap,
   component_slots: ComponentSlotMap,
   loop_vars: Set(String),
   handler_lookup: HandlerLookup,
-) -> String {
-  let pad = string.repeat("  ", indent)
-
+) -> List(ConcatItem) {
   case node {
     parser.TextNode(text) -> {
       let escaped = escape_gleam_string(text)
-      pad <> "<> \"" <> escaped <> "\"\n"
+      [StringBatch(["\"" <> escaped <> "\""])]
     }
 
     parser.VariableNode(expr, _line) -> {
-      // Check if this is a loop variable property that needs type conversion
-      let converted_expr = convert_loop_var_expr(expr)
-      pad <> "<> " <> converted_expr <> "\n"
+      let converted = convert_variable_expr(expr, prop_types, loop_vars)
+      [StringBatch([converted])]
     }
 
     parser.RawVariableNode(expr, _line) -> {
-      // For raw variables, we still need to convert loop properties to strings
-      let converted_expr = convert_loop_var_expr_raw(expr, loop_vars)
-      pad <> "<> " <> converted_expr <> "\n"
+      let converted = convert_raw_variable_expr(expr, loop_vars)
+      [StringBatch([converted])]
     }
 
     parser.SlotNode(None, []) -> {
-      // <slot /> - no fallback, just output slot
-      pad <> "<> slot\n"
+      [TreeExpr("slot")]
     }
 
     parser.SlotNode(None, fallback) -> {
-      // <slot>fallback</slot> - output fallback if slot is empty
-      let fallback_code =
-        generate_nodes_code_with_loop_vars(
+      let fallback_items =
+        generate_nodes_concat_items(
           fallback,
-          indent + 1,
+          prop_types,
           component_data,
           component_slots,
           loop_vars,
           handler_lookup,
         )
-      pad
-      <> "|> runtime.append_if(slot == \"\", fn(acc) {\n"
-      <> pad
-      <> "  acc\n"
-      <> fallback_code
-      <> pad
-      <> "})\n"
-      <> pad
-      <> "|> runtime.append_if(slot != \"\", fn(acc) { acc <> slot })\n"
+      let fallback_code = items_to_code(fallback_items)
+      [
+        TreeExpr(
+          "case string_tree.is_empty(slot) { True -> "
+          <> fallback_code
+          <> " False -> slot }",
+        ),
+      ]
     }
 
     parser.SlotNode(Some(name), []) -> {
-      // <slot name="x" /> - no fallback
-      pad <> "<> slot_" <> to_field_name(name) <> "\n"
+      let slot_var = "slot_" <> to_field_name(name)
+      [TreeExpr(slot_var)]
     }
 
     parser.SlotNode(Some(name), fallback) -> {
-      // <slot name="x">fallback</slot>
       let slot_var = "slot_" <> to_field_name(name)
-      let fallback_code =
-        generate_nodes_code_with_loop_vars(
+      let fallback_items =
+        generate_nodes_concat_items(
           fallback,
-          indent + 1,
+          prop_types,
           component_data,
           component_slots,
           loop_vars,
           handler_lookup,
         )
-      pad
-      <> "|> runtime.append_if("
-      <> slot_var
-      <> " == \"\", fn(acc) {\n"
-      <> pad
-      <> "  acc\n"
-      <> fallback_code
-      <> pad
-      <> "})\n"
-      <> pad
-      <> "|> runtime.append_if("
-      <> slot_var
-      <> " != \"\", fn(acc) { acc <> "
-      <> slot_var
-      <> " })\n"
+      let fallback_code = items_to_code(fallback_items)
+      [
+        TreeExpr(
+          "case string_tree.is_empty("
+          <> slot_var
+          <> ") { True -> "
+          <> fallback_code
+          <> " False -> "
+          <> slot_var
+          <> " }",
+        ),
+      ]
     }
 
-    parser.SlotDefNode(_, _) -> {
-      // SlotDefNodes are handled separately (when using components)
-      ""
-    }
+    parser.SlotDefNode(_, _) -> []
 
     parser.IfNode(branches) -> {
-      // Generate nested case expressions for if/elseif/else chains
-      // This allows function calls in conditions (unlike guard clauses)
-      generate_if_branches(
-        branches,
-        indent,
-        component_data,
-        component_slots,
-        loop_vars,
-        handler_lookup,
-      )
+      let code =
+        generate_if_concat_branches(
+          branches,
+          prop_types,
+          component_data,
+          component_slots,
+          loop_vars,
+          handler_lookup,
+        )
+      [TreeExpr(code)]
     }
 
     parser.EachNode(collection, items, loop_var, body, _line) -> {
-      // Collection is passed through directly (e.g., "items")
-      // Add loop variable to the set so we can generate proper type conversions
       let new_loop_vars = case loop_var {
         Some(lv) -> set.insert(loop_vars, lv)
         None -> loop_vars
       }
-      let body_code =
-        generate_nodes_code_with_loop_vars(
+      let body_items =
+        generate_nodes_concat_items(
           body,
-          indent + 2,
+          prop_types,
           component_data,
           component_slots,
           new_loop_vars,
           handler_lookup,
         )
-      // For tuple destructuring, we need to use a temp var and let binding
-      // since Gleam doesn't allow pattern matching in fn parameters
+      let body_code = items_to_code(body_items)
+
+      // Handle tuple destructuring
       let #(param_name, destructure_code) = case items {
         [single] -> #(single, "")
         multiple -> {
           let pattern = "#(" <> string.join(multiple, ", ") <> ")"
-          #("item__", pad <> "  let " <> pattern <> " = item__\n")
+          #("item__", "let " <> pattern <> " = item__\n  ")
         }
       }
-      case loop_var {
+
+      let code = case loop_var {
         None ->
-          pad
-          <> "|> runtime.append_each("
+          "runtime.concat_each("
           <> collection
-          <> ", fn(acc, "
+          <> ", fn("
           <> param_name
-          <> ") {\n"
+          <> ") { "
           <> destructure_code
-          <> pad
-          <> "  acc\n"
           <> body_code
-          <> pad
-          <> "})\n"
+          <> " })"
         Some(loop_name) ->
-          pad
-          <> "|> runtime.append_each_with_loop("
+          "runtime.concat_each_with_loop("
           <> collection
-          <> ", fn(acc, "
+          <> ", fn("
           <> param_name
           <> ", "
           <> loop_name
-          <> ") {\n"
+          <> ") { "
           <> destructure_code
-          <> pad
-          <> "  acc\n"
           <> body_code
-          <> pad
-          <> "})\n"
+          <> " })"
       }
+      [TreeExpr(code)]
     }
 
     parser.ComponentNode(name, attributes, children) -> {
-      let module_alias = component_module_alias(name)
-      let #(default_children, named_slots) = separate_slot_defs(children)
-      let #(props_code, extra_attrs_code) =
-        generate_component_attrs(
+      let render_expr =
+        generate_component_render_concat(
           name,
           attributes,
-          indent + 2,
-          component_data,
-          handler_lookup,
-        )
-      let named_slots_code =
-        generate_component_named_slots_with_loop_vars(
-          name,
-          named_slots,
-          indent + 2,
+          children,
+          prop_types,
           component_data,
           component_slots,
           loop_vars,
           handler_lookup,
         )
-
-      // Check if the component has a default slot
-      let slot_info = dict.get(component_slots, name)
-      let component_has_slot = case slot_info {
-        Ok(info) -> info.has_default_slot
-        Error(_) -> True
-        // Default to True if unknown (safe fallback)
-      }
-
-      // Only include slot argument if component has @slot
-      let slot_code = case component_has_slot {
-        True -> {
-          let default_slot_code =
-            generate_nodes_code_with_loop_vars(
-              default_children,
-              indent + 2,
-              component_data,
-              component_slots,
-              loop_vars,
-              handler_lookup,
-            )
-          pad
-          <> "    slot: {\n"
-          <> pad
-          <> "      \"\"\n"
-          <> default_slot_code
-          <> pad
-          <> "    },\n"
-        }
-        False -> ""
-      }
-
-      let render_expr =
-        module_alias
-        <> ".render(\n"
-        <> props_code
-        <> named_slots_code
-        <> slot_code
-        <> pad
-        <> "    attributes: "
-        <> extra_attrs_code
-        <> ",\n"
-        <> pad
-        <> "  )"
 
       // If this is a live component, wrap in a data-l-live container
       let is_live_component = case dict.get(component_data, name) {
@@ -1784,94 +1631,531 @@ fn generate_node_code_with_loop_vars(
       }
 
       case is_live_component {
-        False -> pad <> "<> " <> render_expr <> "\n"
+        False -> [TreeExpr(render_expr)]
         True -> {
           let component_module =
             "compiled/loom/components/" <> string.replace(name, ":", "/")
           let props_json_expr =
             generate_component_props_json(name, attributes, component_data)
-          pad
-          <> "<> runtime.live_component_wrapper(\n"
-          <> pad
-          <> "    "
-          <> render_expr
-          <> ",\n"
-          <> pad
-          <> "    \""
-          <> component_module
-          <> "\",\n"
-          <> pad
-          <> "    "
-          <> props_json_expr
-          <> ",\n"
-          <> pad
-          <> "  )\n"
+          [
+            StringBatch([
+              "runtime.live_component_wrapper(string_tree.to_string("
+              <> render_expr
+              <> "), \""
+              <> component_module
+              <> "\", "
+              <> props_json_expr
+              <> ")",
+            ]),
+          ]
         }
       }
     }
 
     parser.AttributesNode(base_attrs) -> {
-      case base_attrs {
-        [] -> pad <> "<> \" \" <> runtime.render_attributes(attributes)\n"
+      let attrs_code = case base_attrs {
+        [] -> "\" \" <> runtime.render_attributes(attributes)"
         _ -> {
           let base_attrs_code = generate_base_attrs_code(base_attrs)
-          pad
-          <> "<> \" \" <> runtime.render_attributes(runtime.merge_attributes("
+          "\" \" <> runtime.render_attributes(runtime.merge_attributes("
           <> base_attrs_code
-          <> ", attributes))\n"
+          <> ", attributes))"
         }
       }
+      [StringBatch([attrs_code])]
     }
 
     parser.ElementNode(tag, attributes, children) -> {
-      let attrs_code = generate_element_attrs_code(attributes, handler_lookup)
+      // <template> is a phantom wrapper - only render children
+      case tag {
+        "template" ->
+          generate_nodes_concat_items(
+            children,
+            prop_types,
+            component_data,
+            component_slots,
+            loop_vars,
+            handler_lookup,
+          )
+        _ -> {
+          let attrs_items =
+            generate_element_attrs_concat(attributes, handler_lookup)
 
-      // Extract AttributesNode from children (injected by inject_attributes)
-      // so it renders before the closing > of the opening tag
-      let #(attributes_code, remaining_children) =
-        extract_attributes_node(children, pad)
-      let children_code =
-        generate_nodes_code_with_loop_vars(
-          remaining_children,
-          indent,
+          // Extract AttributesNode from children
+          let #(attributes_items, remaining_children) =
+            extract_attributes_concat(children, handler_lookup)
+
+          let children_items =
+            generate_nodes_concat_items(
+              remaining_children,
+              prop_types,
+              component_data,
+              component_slots,
+              loop_vars,
+              handler_lookup,
+            )
+
+          case is_void_element(tag) {
+            True ->
+              list.flatten([
+                [StringBatch(["\"<" <> escape_gleam_string(tag) <> "\""])],
+                attrs_items,
+                attributes_items,
+                [StringBatch(["\" />\""])],
+              ])
+            False ->
+              list.flatten([
+                [StringBatch(["\"<" <> escape_gleam_string(tag) <> "\""])],
+                attrs_items,
+                attributes_items,
+                [StringBatch(["\">\""])],
+                children_items,
+                [StringBatch(["\"</" <> escape_gleam_string(tag) <> ">\""])],
+              ])
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Template if/elseif/else chains become nested `case`
+/// expressions where each `False` branch contains the next
+/// condition. Every branch body gets its own `items_to_code`
+/// call so branches with only strings produce efficient
+/// `from_strings` while mixed branches use `concat`.
+///
+fn generate_if_concat_branches(
+  branches: List(#(Option(String), Int, List(parser.Node))),
+  prop_types: Dict(String, String),
+  component_data: ComponentDataMap,
+  component_slots: ComponentSlotMap,
+  loop_vars: Set(String),
+  handler_lookup: HandlerLookup,
+) -> String {
+  generate_if_concat_recursive(
+    branches,
+    prop_types,
+    component_data,
+    component_slots,
+    loop_vars,
+    handler_lookup,
+  )
+}
+
+/// Else-if chains nest naturally: each `False ->` arm contains
+/// the next condition's `case`. The recursion bottoms out with
+/// `string_tree.new()` when there is no else branch, producing
+/// an empty tree.
+///
+fn generate_if_concat_recursive(
+  branches: List(#(Option(String), Int, List(parser.Node))),
+  prop_types: Dict(String, String),
+  component_data: ComponentDataMap,
+  component_slots: ComponentSlotMap,
+  loop_vars: Set(String),
+  handler_lookup: HandlerLookup,
+) -> String {
+  case branches {
+    [] -> "string_tree.new()"
+    [#(None, _line, body), ..] -> {
+      let body_items =
+        generate_nodes_concat_items(
+          body,
+          prop_types,
           component_data,
           component_slots,
           loop_vars,
           handler_lookup,
         )
-
-      // <template> is a phantom wrapper - only render children, not the tag itself
-      case tag {
-        "template" -> children_code
+      items_to_code(body_items)
+    }
+    [#(Some(cond), _line, body), ..rest] -> {
+      let transformed_cond = transform_slot_condition(cond)
+      let body_items =
+        generate_nodes_concat_items(
+          body,
+          prop_types,
+          component_data,
+          component_slots,
+          loop_vars,
+          handler_lookup,
+        )
+      let body_code = items_to_code(body_items)
+      let else_code = case rest {
+        [] -> "string_tree.new()"
+        [#(None, _, else_body)] -> {
+          let else_items =
+            generate_nodes_concat_items(
+              else_body,
+              prop_types,
+              component_data,
+              component_slots,
+              loop_vars,
+              handler_lookup,
+            )
+          items_to_code(else_items)
+        }
         _ ->
-          // Self-closing tags
-          case is_void_element(tag) {
-            True ->
-              pad
-              <> "<> \"<"
-              <> tag
-              <> "\"\n"
-              <> attrs_code
-              <> attributes_code
-              <> pad
-              <> "<> \" />\"\n"
-            False ->
-              pad
-              <> "<> \"<"
-              <> tag
-              <> "\"\n"
-              <> attrs_code
-              <> attributes_code
-              <> pad
-              <> "<> \">\"\n"
-              <> children_code
-              <> pad
-              <> "<> \"</"
-              <> tag
-              <> ">\"\n"
-          }
+          generate_if_concat_recursive(
+            rest,
+            prop_types,
+            component_data,
+            component_slots,
+            loop_vars,
+            handler_lookup,
+          )
+      }
+      "case "
+      <> transformed_cond
+      <> " { True -> "
+      <> body_code
+      <> " False -> "
+      <> else_code
+      <> " }"
+    }
+  }
+}
+
+/// Build a component's `.render(...)` call expression for the
+/// concat code path. Separates children into default slot
+/// content and named slots, converts each slot body to a
+/// StringTree expression via `items_to_code`, and assembles
+/// props and attributes into the function call.
+///
+fn generate_component_render_concat(
+  name: String,
+  attributes: List(lexer.ComponentAttr),
+  children: List(Node),
+  prop_types: Dict(String, String),
+  component_data: ComponentDataMap,
+  component_slots: ComponentSlotMap,
+  loop_vars: Set(String),
+  handler_lookup: HandlerLookup,
+) -> String {
+  let module_alias = component_module_alias(name)
+  let #(default_children, named_slots) = separate_slot_defs(children)
+  let #(props_code, extra_attrs_code) =
+    generate_component_attrs(
+      name,
+      attributes,
+      2,
+      component_data,
+      handler_lookup,
+    )
+  let named_slots_code =
+    generate_component_named_slots_concat(
+      name,
+      named_slots,
+      prop_types,
+      component_data,
+      component_slots,
+      loop_vars,
+      handler_lookup,
+    )
+
+  let slot_info = dict.get(component_slots, name)
+  let component_has_slot = case slot_info {
+    Ok(info) -> info.has_default_slot
+    Error(_) -> True
+  }
+
+  let slot_code = case component_has_slot {
+    True -> {
+      let default_slot_items =
+        generate_nodes_concat_items(
+          default_children,
+          prop_types,
+          component_data,
+          component_slots,
+          loop_vars,
+          handler_lookup,
+        )
+      "    slot: " <> items_to_code(default_slot_items) <> ",\n"
+    }
+    False -> ""
+  }
+
+  module_alias
+  <> ".render(\n"
+  <> props_code
+  <> named_slots_code
+  <> slot_code
+  <> "    attributes: "
+  <> extra_attrs_code
+  <> ",\n"
+  <> "  )"
+}
+
+/// Named slots provided by the parent become `slot_header:`,
+/// `slot_sidebar:`, etc. arguments in the component's render
+/// call. Any slots the component expects but the parent didn't
+/// provide get filled with `string_tree.new()` so the component
+/// can render without crashing on missing args.
+///
+fn generate_component_named_slots_concat(
+  component_name: String,
+  named_slots: List(#(Option(String), List(Node))),
+  prop_types: Dict(String, String),
+  component_data: ComponentDataMap,
+  component_slots: ComponentSlotMap,
+  loop_vars: Set(String),
+  handler_lookup: HandlerLookup,
+) -> String {
+  let actual_named_slots =
+    list.filter_map(named_slots, fn(slot) {
+      case slot.0 {
+        Some(name) -> Ok(#(name, slot.1))
+        None -> Error(Nil)
+      }
+    })
+
+  let provided_slot_names =
+    list.map(actual_named_slots, fn(slot) { slot.0 }) |> set.from_list
+
+  let expected_slots = case dict.get(component_slots, component_name) {
+    Ok(info) -> info.named_slots
+    Error(_) -> []
+  }
+
+  let provided_code =
+    actual_named_slots
+    |> list.map(fn(slot) {
+      let #(name, children) = slot
+      let slot_items =
+        generate_nodes_concat_items(
+          children,
+          prop_types,
+          component_data,
+          component_slots,
+          loop_vars,
+          handler_lookup,
+        )
+      "    slot_"
+      <> to_field_name(name)
+      <> ": "
+      <> items_to_code(slot_items)
+      <> ",\n"
+    })
+    |> string.join("")
+
+  let missing_code =
+    expected_slots
+    |> list.filter(fn(name) { !set.contains(provided_slot_names, name) })
+    |> list.map(fn(name) {
+      "    slot_" <> to_field_name(name) <> ": string_tree.new(),\n"
+    })
+    |> string.join("")
+
+  provided_code <> missing_code
+}
+
+/// Route element attributes through the concat code path. Empty
+/// attribute lists produce no items. Non-empty lists delegate
+/// to `generate_element_attrs_concat_items` which builds
+/// runtime.Attribute constructors directly rather than going
+/// through the legacy pipe-based code path.
+///
+fn generate_element_attrs_concat(
+  attrs: List(lexer.ComponentAttr),
+  handler_lookup: HandlerLookup,
+) -> List(ConcatItem) {
+  case attrs {
+    [] -> []
+    _ -> {
+      // Re-use existing generate_element_attrs_code which returns a string
+      // of pipe operations. We need to convert this to ConcatItems.
+      let code = generate_element_attrs_code(attrs, handler_lookup)
+      case code {
+        "" -> []
+        _ -> {
+          // The existing function returns `  |> string_tree.append("..." <> runtime.render_attributes(...))\n`
+          // We need to extract just the expression inside append()
+          // Instead, let's generate the attrs directly as ConcatItem
+          generate_element_attrs_concat_items(attrs, handler_lookup)
+        }
       }
     }
+  }
+}
+
+/// Convert each element attribute into a `runtime.Attribute` or
+/// `runtime.BoolAttribute` constructor and wrap the whole list
+/// in a `render_attributes(...)` call returned as a single
+/// StringBatch. Handles `l-show` / `:style` merging, `l-on`
+/// event handlers, `l-model` two-way binding, and the
+/// `@attributes` spread directive.
+///
+fn generate_element_attrs_concat_items(
+  attrs: List(lexer.ComponentAttr),
+  handler_lookup: HandlerLookup,
+) -> List(ConcatItem) {
+  // Pre-scan for l-show to merge with existing :style if present
+  let show_condition =
+    list.find_map(attrs, fn(attr) {
+      case attr {
+        lexer.LmShow(condition, _) -> Ok(condition)
+        _ -> Error(Nil)
+      }
+    })
+    |> option.from_result
+  let has_style_attr =
+    list.any(attrs, fn(attr) {
+      case attr {
+        lexer.StyleAttr(_) -> True
+        _ -> False
+      }
+    })
+
+  let attr_items =
+    attrs
+    |> list.filter_map(fn(attr) {
+      case attr {
+        lexer.StringAttr(name, value) ->
+          Ok(
+            "runtime.Attribute(\""
+            <> normalize_attr_name(name)
+            <> "\", \""
+            <> escape_gleam_string(value)
+            <> "\")",
+          )
+        lexer.ExprAttr(name, value) ->
+          case is_html_boolean_attribute(name) {
+            True ->
+              Ok("runtime.BoolAttribute(\"" <> name <> "\", " <> value <> ")")
+            False ->
+              Ok("runtime.Attribute(\"" <> name <> "\", " <> value <> ")")
+          }
+        lexer.BoolAttr("@attributes") -> Error(Nil)
+        lexer.BoolAttr(name) -> {
+          let normalized = normalize_attr_name(name)
+          Ok(
+            "runtime.Attribute(\""
+            <> normalized
+            <> "\", \""
+            <> normalized
+            <> "\")",
+          )
+        }
+        lexer.ClassAttr(value) ->
+          Ok(
+            "runtime.Attribute(\"class\", runtime.build_classes("
+            <> transform_class_list(value)
+            <> "))",
+          )
+        lexer.StyleAttr(value) -> {
+          let base =
+            "runtime.build_styles(" <> transform_style_list(value) <> ")"
+          case show_condition {
+            Some(cond) ->
+              Ok(
+                "runtime.Attribute(\"style\", "
+                <> base
+                <> " <> case "
+                <> cond
+                <> " { True -> \"\" False -> \"; display: none\" })",
+              )
+            None -> Ok("runtime.Attribute(\"style\", " <> base <> ")")
+          }
+        }
+        lexer.LmShow(condition, _) ->
+          case has_style_attr {
+            True -> Error(Nil)
+            False ->
+              Ok(
+                "runtime.Attribute(\"style\", case "
+                <> condition
+                <> " { True -> \"\" False -> \"display: none\" })",
+              )
+          }
+        lexer.LmOn(event, modifiers, handler, line) ->
+          generate_handler_attr_code(
+            event,
+            modifiers,
+            handler,
+            line,
+            handler_lookup,
+          )
+        lexer.LmModel(prop, line) ->
+          generate_model_attr_code(prop, line, handler_lookup)
+        lexer.LmIf(_, _)
+        | lexer.LmElseIf(_, _)
+        | lexer.LmElse
+        | lexer.LmFor(_, _, _, _) -> Error(Nil)
+      }
+    })
+
+  // For l-model, also generate a value attribute
+  let lm_model_value_attrs =
+    attrs
+    |> list.filter_map(fn(attr) {
+      case attr {
+        lexer.LmModel(prop, _) ->
+          Ok("runtime.Attribute(\"value\", " <> prop <> ")")
+        _ -> Error(Nil)
+      }
+    })
+
+  let all_items = list.append(attr_items, lm_model_value_attrs)
+
+  let has_attributes_directive =
+    list.any(attrs, fn(attr) {
+      case attr {
+        lexer.BoolAttr("@attributes") -> True
+        _ -> False
+      }
+    })
+
+  case all_items, has_attributes_directive {
+    [], True -> [
+      StringBatch(["\" \" <> runtime.render_attributes(attributes)"]),
+    ]
+    [], False -> []
+    items, True -> [
+      StringBatch([
+        "\" \" <> runtime.render_attributes(runtime.merge_attributes(["
+        <> string.join(items, ", ")
+        <> "], attributes))",
+      ]),
+    ]
+    items, False -> [
+      StringBatch([
+        "\" \" <> runtime.render_attributes(["
+        <> string.join(items, ", ")
+        <> "])",
+      ]),
+    ]
+  }
+}
+
+/// Components with `@attributes` get an AttributesNode injected
+/// as the first child of their root element. This function
+/// pulls it out so the caller can emit it between the opening
+/// tag and `>`, where HTML attributes belong, instead of after
+/// the `>` as regular child content.
+///
+fn extract_attributes_concat(
+  children: List(Node),
+  _handler_lookup: HandlerLookup,
+) -> #(List(ConcatItem), List(Node)) {
+  case children {
+    [parser.AttributesNode(base_attrs), ..rest] -> {
+      let items = case base_attrs {
+        [] -> [StringBatch(["\" \" <> runtime.render_attributes(attributes)"])]
+        _ -> {
+          let base_attrs_code = generate_base_attrs_code(base_attrs)
+          [
+            StringBatch([
+              "\" \" <> runtime.render_attributes(runtime.merge_attributes("
+              <> base_attrs_code
+              <> ", attributes))",
+            ]),
+          ]
+        }
+      }
+      #(items, rest)
+    }
+    _ -> #([], children)
   }
 }
 
@@ -2128,80 +2412,6 @@ fn is_html_boolean_attribute(name: String) -> Bool {
   }
 }
 
-/// Named slots provided by the parent must become arguments in
-/// the component's render call, and any expected slots not
-/// provided must be filled with empty strings. Loop variable
-/// tracking is threaded through because slot content can
-/// reference variables from enclosing l-for loops.
-///
-fn generate_component_named_slots_with_loop_vars(
-  component_name: String,
-  named_slots: List(#(Option(String), List(Node))),
-  indent: Int,
-  component_data: ComponentDataMap,
-  component_slots: ComponentSlotMap,
-  loop_vars: Set(String),
-  handler_lookup: HandlerLookup,
-) -> String {
-  let pad = string.repeat("  ", indent)
-
-  // Filter to only named slots (Some(name)), not default slot definitions
-  let actual_named_slots =
-    list.filter_map(named_slots, fn(slot) {
-      case slot.0 {
-        Some(name) -> Ok(#(name, slot.1))
-        None -> Error(Nil)
-      }
-    })
-
-  // Get the names of slots that are explicitly provided
-  let provided_slot_names =
-    list.map(actual_named_slots, fn(slot) { slot.0 }) |> set.from_list
-
-  // Get all named slots the component expects
-  let expected_slots = case dict.get(component_slots, component_name) {
-    Ok(info) -> info.named_slots
-    Error(_) -> []
-  }
-
-  // Generate code for explicitly provided slots
-  let provided_slots_code =
-    actual_named_slots
-    |> list.map(fn(slot) {
-      let #(name, children) = slot
-      let slot_code =
-        generate_nodes_code_with_loop_vars(
-          children,
-          indent + 2,
-          component_data,
-          component_slots,
-          loop_vars,
-          handler_lookup,
-        )
-      pad
-      <> "slot_"
-      <> to_field_name(name)
-      <> ": {\n"
-      <> pad
-      <> "  \"\"\n"
-      <> slot_code
-      <> pad
-      <> "},\n"
-    })
-    |> string.join("")
-
-  // Generate empty strings for missing slots
-  let missing_slots_code =
-    expected_slots
-    |> list.filter(fn(name) { !set.contains(provided_slot_names, name) })
-    |> list.map(fn(name) {
-      pad <> "slot_" <> to_field_name(name) <> ": \"\",\n"
-    })
-    |> string.join("")
-
-  provided_slots_code <> missing_slots_code
-}
-
 /// Element attributes (unlike component attributes) are all
 /// HTML attributes — there's no prop/attribute split. They
 /// still need conversion to runtime constructors because
@@ -2337,16 +2547,17 @@ fn generate_element_attrs_code(
         })
 
       case all_items, has_attributes_directive {
-        [], True -> "  <> \" \" <> runtime.render_attributes(attributes)\n"
+        [], True ->
+          "  |> string_tree.append(\" \" <> runtime.render_attributes(attributes))\n"
         [], False -> ""
         items, True ->
-          "  <> \" \" <> runtime.render_attributes(runtime.merge_attributes(["
+          "  |> string_tree.append(\" \" <> runtime.render_attributes(runtime.merge_attributes(["
           <> string.join(items, ", ")
-          <> "], attributes))\n"
+          <> "], attributes)))\n"
         items, False ->
-          "  <> \" \" <> runtime.render_attributes(["
+          "  |> string_tree.append(\" \" <> runtime.render_attributes(["
           <> string.join(items, ", ")
-          <> "])\n"
+          <> "]))\n"
       }
     }
   }
@@ -2497,34 +2708,6 @@ fn generate_base_attrs_code(attrs: List(lexer.ComponentAttr)) -> String {
     })
 
   "[" <> string.join(items, ", ") <> "]"
-}
-
-/// Spread attributes like `class` and `id` passed to a
-/// component need to appear inside the opening tag (`<div
-/// class="...">`), not as child content after the `>`. Pulling
-/// the AttributesNode out of the children list lets
-/// generate_node emit it in the right position.
-///
-fn extract_attributes_node(
-  children: List(Node),
-  pad: String,
-) -> #(String, List(Node)) {
-  case children {
-    [parser.AttributesNode(base_attrs), ..rest] -> {
-      let code = case base_attrs {
-        [] -> pad <> "<> \" \" <> runtime.render_attributes(attributes)\n"
-        _ -> {
-          let base_attrs_code = generate_base_attrs_code(base_attrs)
-          pad
-          <> "<> \" \" <> runtime.render_attributes(runtime.merge_attributes("
-          <> base_attrs_code
-          <> ", attributes))\n"
-        }
-      }
-      #(code, rest)
-    }
-    _ -> #("", children)
-  }
 }
 
 /// Components without an explicit @attributes directive get
@@ -3151,26 +3334,102 @@ fn wrap_if_expression(current: String, wrapper: String, depth: Int) -> String {
   }
 }
 
-/// Template variables can be any type (String, Int, Bool, etc.)
-/// but string concatenation requires strings. runtime.display()
-/// handles type conversion and HTML escaping in one call,
-/// preventing XSS while supporting non-string types without
-/// explicit conversion.
+/// The old codegen called `runtime.display()` on everything,
+/// which used `string.inspect` at runtime to figure out the
+/// type — slow and it wraps strings in extra quotes. Now that
+/// we have prop type info from view files, we can emit the
+/// right conversion at compile time: `runtime.escape` for
+/// String, `int.to_string` for Int, etc. Unknown types still
+/// fall back to `runtime.display`.
 ///
-fn convert_loop_var_expr(expr: String) -> String {
-  "runtime.display(" <> expr <> ")"
+fn convert_variable_expr(
+  expr: String,
+  prop_types: Dict(String, String),
+  loop_vars: Set(String),
+) -> String {
+  // Check if it's a simple prop reference (e.g., "name" or "data.name")
+  let prop_name = case string.split_once(expr, ".") {
+    Ok(#(_prefix, field)) -> field
+    Error(_) -> expr
+  }
+  case dict.get(prop_types, prop_name) {
+    Ok("String") -> "runtime.escape(" <> expr <> ")"
+    Ok("Int") -> "int.to_string(" <> expr <> ")"
+    Ok("Float") -> "float.to_string(" <> expr <> ")"
+    Ok("Bool") -> "bool.to_string(" <> expr <> ")"
+    Ok(_) -> "runtime.display(" <> expr <> ")"
+    Error(_) -> {
+      // Check if it's a loop variable property
+      case get_loop_property(expr, loop_vars) {
+        Some(#(_, property)) ->
+          case property {
+            "index" | "iteration" | "count" | "remaining" ->
+              "int.to_string(" <> expr <> ")"
+            "first" | "last" | "even" | "odd" ->
+              "bool.to_string(" <> expr <> ")"
+            _ -> "runtime.display(" <> expr <> ")"
+          }
+        None -> "runtime.display(" <> expr <> ")"
+      }
+    }
+  }
 }
 
-/// Raw variables ({!! expr !!}) skip HTML escaping for cases
-/// like pre-rendered HTML. Loop properties (loop.index,
-/// loop.first) still need type conversion since they're
-/// Int/Bool, but regular raw variables are assumed to be
-/// strings already and are passed through directly.
+/// Raw variables (`{!! expr !!}`) skip HTML escaping — the
+/// author is saying "I know this is safe HTML." Loop properties
+/// like `loop.index` still need type conversion since they're
+/// Int/Bool, but everything else passes through as-is.
 ///
-fn convert_loop_var_expr_raw(expr: String, loop_vars: Set(String)) -> String {
+fn convert_raw_variable_expr(expr: String, loop_vars: Set(String)) -> String {
   case get_loop_property(expr, loop_vars) {
     Some(_) -> "runtime.to_string(" <> expr <> ")"
     None -> expr
+  }
+}
+
+/// Turn the collected ConcatItems into the final Gleam code.
+/// First merges adjacent StringBatch items so `"<div>"` and
+/// `"hello"` become one `from_strings(["<div>", "hello"])`.
+/// Then picks the simplest shape: a lone StringBatch becomes
+/// `from_strings`, a lone TreeExpr is emitted bare, and mixed
+/// lists get wrapped in `string_tree.concat([...])`.
+///
+fn items_to_code(items: List(ConcatItem)) -> String {
+  let merged = merge_concat_items(items, [])
+  case merged {
+    [] -> "string_tree.new()"
+    [StringBatch(exprs)] ->
+      "string_tree.from_strings([" <> string.join(exprs, ", ") <> "])"
+    [TreeExpr(code)] -> code
+    _ -> {
+      let parts =
+        list.map(merged, fn(item) {
+          case item {
+            StringBatch(exprs) ->
+              "string_tree.from_strings([" <> string.join(exprs, ", ") <> "])"
+            TreeExpr(code) -> code
+          }
+        })
+      "string_tree.concat([" <> string.join(parts, ", ") <> "])"
+    }
+  }
+}
+
+/// Consecutive StringBatch items get merged into a single batch
+/// so the generated code produces one `from_strings` call
+/// instead of several. This is a simple linear scan — when two
+/// StringBatch items are adjacent, combine their expression
+/// lists and keep going.
+///
+fn merge_concat_items(
+  items: List(ConcatItem),
+  acc: List(ConcatItem),
+) -> List(ConcatItem) {
+  case items {
+    [] -> list.reverse(acc)
+    [StringBatch(a), StringBatch(b), ..rest] ->
+      merge_concat_items([StringBatch(list.append(a, b)), ..rest], acc)
+    [item, ..rest] -> merge_concat_items(rest, [item, ..acc])
   }
 }
 
@@ -3213,6 +3472,7 @@ fn generate_tree_function(
   // Extract the content nodes for the tree.
   // For templates with a root layout component, extract the default slot children.
   let content_nodes = extract_tree_content_nodes(template.nodes)
+  let prop_types = dict.from_list(template.props)
 
   // Build function parameters (same as render, minus slots/attributes)
   let prop_params =
@@ -3228,6 +3488,7 @@ fn generate_tree_function(
     generate_tree_body(
       content_nodes,
       1,
+      prop_types,
       component_data,
       component_slots,
       set.new(),
@@ -3343,6 +3604,7 @@ type TreeAcc {
 fn generate_tree_body(
   nodes: List(Node),
   indent: Int,
+  prop_types: Dict(String, String),
   component_data: ComponentDataMap,
   component_slots: ComponentSlotMap,
   loop_vars: Set(String),
@@ -3359,6 +3621,7 @@ fn generate_tree_body(
           node,
           acc,
           indent,
+          prop_types,
           component_data,
           component_slots,
           loop_vars,
@@ -3415,6 +3678,7 @@ fn generate_node_tree(
   node: Node,
   acc: TreeAcc,
   indent: Int,
+  prop_types: Dict(String, String),
   component_data: ComponentDataMap,
   component_slots: ComponentSlotMap,
   loop_vars: Set(String),
@@ -3426,19 +3690,16 @@ fn generate_node_tree(
     }
 
     parser.VariableNode(expr, _line) -> {
-      // Close current static, push DynString
+      let converted = convert_variable_expr(expr, prop_types, loop_vars)
       TreeAcc(
         current_static: "",
-        dynamics: [
-          "loom.DynString(runtime.display(" <> expr <> "))",
-          ..acc.dynamics
-        ],
+        dynamics: ["loom.DynString(" <> converted <> ")", ..acc.dynamics],
         statics: [acc.current_static, ..acc.statics],
       )
     }
 
     parser.RawVariableNode(expr, _line) -> {
-      let converted_expr = convert_loop_var_expr_raw(expr, loop_vars)
+      let converted_expr = convert_raw_variable_expr(expr, loop_vars)
       TreeAcc(
         current_static: "",
         dynamics: ["loom.DynString(" <> converted_expr <> ")", ..acc.dynamics],
@@ -3451,6 +3712,7 @@ fn generate_node_tree(
         generate_if_tree_code(
           branches,
           indent + 1,
+          prop_types,
           component_data,
           component_slots,
           loop_vars,
@@ -3475,6 +3737,7 @@ fn generate_node_tree(
           loop_var,
           body,
           indent + 1,
+          prop_types,
           component_data,
           component_slots,
           new_loop_vars,
@@ -3488,20 +3751,21 @@ fn generate_node_tree(
     }
 
     parser.ComponentNode(name, attributes, children) -> {
-      // Components are treated as opaque DynString
       let component_code =
-        generate_component_render_expr(
+        "string_tree.to_string("
+        <> generate_component_render_expr(
           name,
           attributes,
           children,
           indent,
+          prop_types,
           component_data,
           component_slots,
           loop_vars,
           handler_lookup,
         )
+        <> ")"
 
-      // If this is a live component, wrap in a data-l-live container
       let is_live_component = case dict.get(component_data, name) {
         Ok(data) -> data.is_live
         Error(_) -> False
@@ -3532,14 +3796,13 @@ fn generate_node_tree(
     }
 
     parser.ElementNode(tag, attributes, children) -> {
-      // For elements, the tag and static attrs are static,
-      // dynamic attrs (event handlers, expressions) split further
       generate_element_tree(
         tag,
         attributes,
         children,
         acc,
         indent,
+        prop_types,
         component_data,
         component_slots,
         loop_vars,
@@ -3548,7 +3811,6 @@ fn generate_node_tree(
     }
 
     parser.SlotNode(None, []) -> {
-      // Slot becomes dynamic (its content may change)
       TreeAcc(
         current_static: "",
         dynamics: ["loom.DynString(slot)", ..acc.dynamics],
@@ -3567,6 +3829,7 @@ fn generate_node_tree(
 fn generate_if_tree_code(
   branches: List(#(Option(String), Int, List(Node))),
   indent: Int,
+  prop_types: Dict(String, String),
   component_data: ComponentDataMap,
   component_slots: ComponentSlotMap,
   loop_vars: Set(String),
@@ -3577,6 +3840,7 @@ fn generate_if_tree_code(
     branches,
     indent,
     pad,
+    prop_types,
     component_data,
     component_slots,
     loop_vars,
@@ -3588,6 +3852,7 @@ fn generate_if_tree_branches(
   branches: List(#(Option(String), Int, List(Node))),
   indent: Int,
   pad: String,
+  prop_types: Dict(String, String),
   component_data: ComponentDataMap,
   component_slots: ComponentSlotMap,
   loop_vars: Set(String),
@@ -3596,11 +3861,11 @@ fn generate_if_tree_branches(
   case branches {
     [] -> "loom.LiveTree(statics: [\"\"], dynamics: [])"
     [#(None, _line, body), ..] -> {
-      // Else branch
       let body_code =
         generate_tree_body(
           body,
           indent + 1,
+          prop_types,
           component_data,
           component_slots,
           loop_vars,
@@ -3614,6 +3879,7 @@ fn generate_if_tree_branches(
         generate_tree_body(
           body,
           indent + 2,
+          prop_types,
           component_data,
           component_slots,
           loop_vars,
@@ -3626,6 +3892,7 @@ fn generate_if_tree_branches(
             generate_tree_body(
               else_body,
               indent + 2,
+              prop_types,
               component_data,
               component_slots,
               loop_vars,
@@ -3639,6 +3906,7 @@ fn generate_if_tree_branches(
               rest,
               indent + 1,
               pad <> "  ",
+              prop_types,
               component_data,
               component_slots,
               loop_vars,
@@ -3672,6 +3940,7 @@ fn generate_each_tree_code(
   loop_var: Option(String),
   body: List(Node),
   indent: Int,
+  prop_types: Dict(String, String),
   component_data: ComponentDataMap,
   component_slots: ComponentSlotMap,
   loop_vars: Set(String),
@@ -3682,6 +3951,7 @@ fn generate_each_tree_code(
     generate_tree_body(
       body,
       indent + 1,
+      prop_types,
       component_data,
       component_slots,
       loop_vars,
@@ -3733,6 +4003,7 @@ fn generate_component_render_expr(
   attributes: List(lexer.ComponentAttr),
   children: List(Node),
   indent: Int,
+  prop_types: Dict(String, String),
   component_data: ComponentDataMap,
   component_slots: ComponentSlotMap,
   loop_vars: Set(String),
@@ -3749,10 +4020,10 @@ fn generate_component_render_expr(
       handler_lookup,
     )
   let named_slots_code =
-    generate_component_named_slots_with_loop_vars(
+    generate_component_named_slots_concat(
       name,
       named_slots,
-      indent + 2,
+      prop_types,
       component_data,
       component_slots,
       loop_vars,
@@ -3769,22 +4040,16 @@ fn generate_component_render_expr(
 
   let slot_code = case component_has_slot {
     True -> {
-      let default_slot_code =
-        generate_nodes_code_with_loop_vars(
+      let default_slot_items =
+        generate_nodes_concat_items(
           default_children,
-          indent + 2,
+          prop_types,
           component_data,
           component_slots,
           loop_vars,
           handler_lookup,
         )
-      pad
-      <> "    slot: {\n"
-      <> pad
-      <> "      \"\"\n"
-      <> default_slot_code
-      <> pad
-      <> "    },\n"
+      pad <> "    slot: " <> items_to_code(default_slot_items) <> ",\n"
     }
     False -> ""
   }
@@ -3813,6 +4078,7 @@ fn generate_element_tree(
   children: List(Node),
   acc: TreeAcc,
   indent: Int,
+  prop_types: Dict(String, String),
   component_data: ComponentDataMap,
   component_slots: ComponentSlotMap,
   loop_vars: Set(String),
@@ -3826,6 +4092,7 @@ fn generate_element_tree(
           child,
           acc,
           indent,
+          prop_types,
           component_data,
           component_slots,
           loop_vars,
@@ -3833,9 +4100,6 @@ fn generate_element_tree(
         )
       })
     _ -> {
-      // Build the opening tag. Static attrs go into the current static
-      // fragment; dynamic attrs (expressions, :class, :style) create
-      // dynamic slots.
       let acc = TreeAcc(..acc, current_static: acc.current_static <> "<" <> tag)
       let acc = generate_element_attrs_tree(acc, attributes, handler_lookup)
 
@@ -3843,13 +4107,13 @@ fn generate_element_tree(
         True -> TreeAcc(..acc, current_static: acc.current_static <> " />")
         False -> {
           let acc = TreeAcc(..acc, current_static: acc.current_static <> ">")
-          // Process children recursively
           let acc =
             list.fold(children, acc, fn(acc, child) {
               generate_node_tree(
                 child,
                 acc,
                 indent,
+                prop_types,
                 component_data,
                 component_slots,
                 loop_vars,
