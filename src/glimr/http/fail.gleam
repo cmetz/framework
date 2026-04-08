@@ -32,6 +32,7 @@ pub type Rescue(a) {
 /// it never returns — the type signature `-> a` lets it fit
 /// anywhere without type errors.
 ///
+@deprecated("Return a response with the appropriate status code directly (e.g. response.not_found(), response.empty(503)). The error_handler middleware renders the correct page from the status. The generated _or_fail variants now do this automatically.")
 pub fn with(status: Int) -> a {
   raise(status)
 }

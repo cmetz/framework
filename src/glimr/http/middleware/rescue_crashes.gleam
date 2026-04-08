@@ -8,6 +8,13 @@
 //// HTTP responses so the user sees a proper error page instead
 //// of a stack trace.
 ////
+//// Note: the `fail.rescue` branch below is now legacy. It is
+//// kept only to handle any remaining direct callers of the
+//// deprecated `fail.with` — the generated `_or_fail` query
+//// variants no longer emit code that uses it and instead
+//// return status responses directly. Once `fail.with` is
+//// removed, this branch can go with it.
+////
 
 import glimr/http/context.{type Context}
 import glimr/http/fail

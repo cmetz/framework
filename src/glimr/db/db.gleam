@@ -449,6 +449,7 @@ pub fn connection_driver(conn: Connection) -> Driver {
 /// `users.find_by_id_or_fail(pool, id: id)` and get the user
 /// directly — no case expression needed for the happy path.
 ///
+@deprecated("Use the generated _or_fail variants which take a continuation and return a Response. This function relies on exception-based control flow via fail.with and will be removed.")
 pub fn expect(result: Result(a, DbError)) -> a {
   case result {
     Ok(value) -> value

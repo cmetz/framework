@@ -34,7 +34,7 @@ pub fn generate(
 ) -> String {
   let authenticatable = is_authenticatable(schema_content)
   let header = generate_header(model_name)
-  let imports = generate_imports(table, authenticatable)
+  let imports = generate_imports(table, authenticatable, queries != [])
   let enum_types = generate_enum_types(table)
   let model_type = generate_model_type(model_name, table)
   let model_row_decoder = generate_model_decoder(model_name, table)
@@ -88,7 +88,11 @@ fn generate_header(model_name: String) -> String {
 /// actually has nullable or boolean columns before adding those
 /// imports keeps the generated output warning-free.
 ///
-fn generate_imports(table: Table, authenticatable: Bool) -> String {
+fn generate_imports(
+  table: Table,
+  authenticatable: Bool,
+  has_queries: Bool,
+) -> String {
   let columns = schema_parser.columns(table)
   let has_boolean =
     list.any(columns, fn(col) { col.column_type == schema_parser.Boolean })
@@ -122,6 +126,12 @@ fn generate_imports(table: Table, authenticatable: Bool) -> String {
 
   let db_import = "\nimport glimr/db/db"
 
+  let query_imports = case has_queries {
+    True ->
+      "\nimport glimr/http/http.{type Response}\nimport glimr/response/response"
+    False -> ""
+  }
+
   let auth_imports = case authenticatable {
     True -> {
       let #(_, needs_int) = find_primary_key(table)
@@ -143,6 +153,7 @@ fn generate_imports(table: Table, authenticatable: Bool) -> String {
   <> option_import
   <> glimr_decode_import
   <> db_import
+  <> query_imports
   <> auth_imports
 }
 
@@ -815,13 +826,16 @@ fn generate_row_json_decoder(
 /// Every query produces four generated functions — two axes of
 /// variation that cover different needs. The base variants
 /// (`fn_name`, `fn_name_wc`) return Results for explicit error
-/// handling. The `_or_fail` variants unwrap via `db.expect`,
-/// which halts the request with a proper HTTP error status on
-/// failure — perfect for controllers where a missing row means
-/// a 404 and you don't want to write `case` blocks everywhere.
-/// The `_wc` suffix means "with connection" for use inside
-/// transactions where you already have a connection checked
-/// out.
+/// handling. The `_or_fail` variants take a continuation and
+/// return a `Response` directly — on success they invoke the
+/// continuation with the decoded value, on error they
+/// short-circuit to a status response (404 for NotFound, 503
+/// for connection/timeout, 500 for everything else) that the
+/// global error-handler middleware renders. This keeps
+/// controllers readable as a single `use` expression without
+/// exception-style control flow. The `_wc` suffix means "with
+/// connection" for use inside transactions where you already
+/// have a connection checked out.
 ///
 fn generate_query_function(
   fn_name: String,
@@ -917,8 +931,8 @@ fn generate_query_function(
     False -> snake_case(row_type_name) <> "_row_decoder()"
   }
 
-  // The return type for or_fail variants (no Result wrapper)
-  let or_fail_type = case is_single_row {
+  // The continuation parameter type for _or_fail variants
+  let then_param_type = case is_single_row {
     True -> row_type_name
     False -> "List(" <> row_type_name <> ")"
   }
@@ -927,6 +941,13 @@ fn generate_query_function(
   let result_type = case is_single_row {
     True -> "Result(" <> row_type_name <> ", db.DbError)"
     False -> "Result(List(" <> row_type_name <> "), db.DbError)"
+  }
+
+  // NotFound branch is only meaningful for single-row queries; multi-row
+  // queries return Ok([]) when empty.
+  let not_found_branch = case is_single_row {
+    True -> "    Error(db.NotFound) -> response.not_found()\n"
+    False -> ""
   }
 
   // Generate _wc (default, with connection) — the core implementation
@@ -957,37 +978,48 @@ fn generate_query_function(
     <> param_names
     <> ")\n}"
 
-  // Generate _or_fail_wc (with connection, unwraps via db.expect)
+  // Generate _or_fail_wc (with connection, continuation-style)
   let or_fail_wc_fn =
     "pub fn "
     <> fn_name
-    <> "_or_fail_wc(connection connection: db.Connection"
+    <> "_or_fail_wc(\n"
+    <> "  connection connection: db.Connection"
     <> param_list
-    <> ") -> "
-    <> or_fail_type
-    <> " {\n"
-    <> "  "
+    <> ",\n"
+    <> "  then then: fn("
+    <> then_param_type
+    <> ") -> Response,\n"
+    <> ") -> Response {\n"
+    <> "  case "
     <> fn_name
     <> "_wc(connection: connection"
     <> param_names
-    <> ")\n"
-    <> "  |> db.expect\n}"
+    <> ") {\n"
+    <> "    Ok(value) -> then(value)\n"
+    <> not_found_branch
+    <> "    Error(db.ConnectionError(_)) -> response.empty(503)\n"
+    <> "    Error(db.TimeoutError) -> response.empty(503)\n"
+    <> "    Error(_) -> response.internal_server_error()\n"
+    <> "  }\n}"
 
-  // Generate _or_fail (with pool, unwraps via db.expect)
+  // Generate _or_fail (with pool, continuation-style)
   let or_fail_fn =
     "pub fn "
     <> fn_name
-    <> "_or_fail(pool pool: db.DbPool"
+    <> "_or_fail(\n"
+    <> "  pool pool: db.DbPool"
     <> param_list
-    <> ") -> "
-    <> or_fail_type
-    <> " {\n"
+    <> ",\n"
+    <> "  then then: fn("
+    <> then_param_type
+    <> ") -> Response,\n"
+    <> ") -> Response {\n"
     <> "  use connection <- db.get_connection(pool)\n"
     <> "  "
     <> fn_name
     <> "_or_fail_wc(connection: connection"
     <> param_names
-    <> ")\n}"
+    <> ", then: then)\n}"
 
   string.join([main_fn, wc_fn, or_fail_fn, or_fail_wc_fn], "\n\n")
 }
@@ -1055,9 +1087,11 @@ fn generate_wc_query(
 /// db.exec_with instead of db.query_with — no decoder needed.
 /// They still get the same four-function treatment as queries:
 /// base variants return `Result(Int, DbError)` with the
-/// affected row count, and `_or_fail` variants unwrap via
-/// `db.expect` for controllers that just want to fire and move
-/// on without writing error handling boilerplate.
+/// affected row count, and `_or_fail` variants take a
+/// continuation that receives the affected row count, returning
+/// a `Response` directly. On error they short-circuit to a 503
+/// or 500 status response that the global error-handler
+/// middleware renders.
 ///
 fn generate_execute_function(
   fn_name: String,
@@ -1161,33 +1195,43 @@ fn generate_execute_function(
     <> param_names
     <> ")\n}"
 
-  // Generate _or_fail_wc (with connection, unwraps via db.expect)
+  // Generate _or_fail_wc (with connection, continuation-style)
   let or_fail_wc_fn =
     "pub fn "
     <> fn_name
-    <> "_or_fail_wc(connection connection: db.Connection"
+    <> "_or_fail_wc(\n"
+    <> "  connection connection: db.Connection"
     <> param_list
-    <> ") -> Int {\n"
-    <> "  "
+    <> ",\n"
+    <> "  then then: fn(Int) -> Response,\n"
+    <> ") -> Response {\n"
+    <> "  case "
     <> fn_name
     <> "_wc(connection: connection"
     <> param_names
-    <> ")\n"
-    <> "  |> db.expect\n}"
+    <> ") {\n"
+    <> "    Ok(count) -> then(count)\n"
+    <> "    Error(db.ConnectionError(_)) -> response.empty(503)\n"
+    <> "    Error(db.TimeoutError) -> response.empty(503)\n"
+    <> "    Error(_) -> response.internal_server_error()\n"
+    <> "  }\n}"
 
-  // Generate _or_fail (with pool, unwraps via db.expect)
+  // Generate _or_fail (with pool, continuation-style)
   let or_fail_fn =
     "pub fn "
     <> fn_name
-    <> "_or_fail(pool pool: db.DbPool"
+    <> "_or_fail(\n"
+    <> "  pool pool: db.DbPool"
     <> param_list
-    <> ") -> Int {\n"
+    <> ",\n"
+    <> "  then then: fn(Int) -> Response,\n"
+    <> ") -> Response {\n"
     <> "  use connection <- db.get_connection(pool)\n"
     <> "  "
     <> fn_name
     <> "_or_fail_wc(connection: connection"
     <> param_names
-    <> ")\n}"
+    <> ", then: then)\n}"
 
   string.join([main_fn, wc_fn, or_fail_fn, or_fail_wc_fn], "\n\n")
 }
