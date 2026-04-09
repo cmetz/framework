@@ -16,6 +16,17 @@ import gleam/string
 import glimr/config/config
 import simplifile
 
+// ------------------------------------------------------------- Public Types
+
+/// A structured representation of a single HTML tag needed for
+/// a Vite entry point. Useful when you need to render tags in a
+/// typed UI library like Lustre instead of injecting raw HTML.
+///
+pub type Tag {
+  Script(src: String)
+  Stylesheet(href: String)
+}
+
 // ------------------------------------------------------------- Private Types
 
 /// A single entry in Vite's manifest — the hashed output
@@ -29,8 +40,41 @@ type ManifestChunk {
 
 // ------------------------------------------------------------- Public Functions
 
+/// Returns structured tag data for a Vite entry point. Each
+/// item in the list is either a `Script` or `Stylesheet` with
+/// the resolved URL. Use this when you need to map the tags
+/// into a typed element tree (e.g. Lustre) rather than
+/// injecting raw HTML.
+///
+/// ```gleam
+/// vite.to_tags("src/resources/ts/app.ts")
+/// |> list.map(fn(tag) {
+///   case tag {
+///     vite.Script(src) -> html.script([attribute.type_("module"), attribute.src(src)], [])
+///     vite.Stylesheet(href) -> html.link([attribute.rel("stylesheet"), attribute.href(href)])
+///   }
+/// })
+/// ```
+///
+pub fn to_tags(entry: String) -> List(Tag) {
+  case simplifile.read("priv/static/hot") {
+    Ok(dev_url) -> dev_tag_list(string.trim(dev_url), entry)
+    Error(_) -> prod_tag_list(entry)
+  }
+}
+
+/// Renders a list of tags to an HTML string. This is the
+/// building block behind `tags()` and can be used standalone
+/// when you have a `List(Tag)` from `to_tags()`.
+///
+pub fn render_tags(tags: List(Tag)) -> String {
+  tags
+  |> list.map(render_tag)
+  |> string.join("\n")
+}
+
 /// Emits the `<script>` and `<link>` tags for a Vite entry
-/// point.
+/// point as a ready-to-use HTML string.
 ///
 /// In dev mode (when `priv/static/hot` exists), returns tags
 /// pointing at Vite's dev server for HMR. In production, reads
@@ -43,10 +87,7 @@ type ManifestChunk {
 /// ```
 ///
 pub fn tags(entry: String) -> String {
-  case simplifile.read("priv/static/hot") {
-    Ok(dev_url) -> dev_tags(string.trim(dev_url), entry)
-    Error(_) -> prod_tags(entry)
-  }
+  to_tags(entry) |> render_tags
 }
 
 // ------------------------------------------------------------- Private Functions
@@ -56,29 +97,15 @@ pub fn tags(entry: String) -> String {
 /// entry module is loaded as a native ES module so changes
 /// appear instantly without a full rebuild.
 ///
-fn dev_tags(dev_url: String, entry: String) -> String {
+fn dev_tag_list(dev_url: String, entry: String) -> List(Tag) {
   let css_entry = resolve_css_entry(entry)
 
-  string.concat([
-    "<script type=\"module\" src=\"",
-    dev_url,
-    "/@vite/client\"></script>\n",
-    css_entry
-      |> list.map(fn(css_path) {
-        string.concat([
-          "<link rel=\"stylesheet\" href=\"",
-          dev_url,
-          "/",
-          css_path,
-          "\">\n",
-        ])
-      })
-      |> string.concat,
-    "<script type=\"module\" src=\"",
-    dev_url,
-    "/",
-    entry,
-    "\"></script>",
+  list.flatten([
+    [Script(src: dev_url <> "/@vite/client")],
+    list.map(css_entry, fn(css_path) {
+      Stylesheet(href: dev_url <> "/" <> css_path)
+    }),
+    [Script(src: dev_url <> "/" <> entry)],
   ])
 }
 
@@ -150,12 +177,12 @@ fn resolve_relative_path(entry: String, relative: String) -> String {
 }
 
 /// Production tags resolve hashed filenames from the Vite
-/// manifest. CSS files are emitted as `<link>` tags before the
-/// script to avoid FOUC. The manifest is cached in
+/// manifest. CSS files are emitted as `Stylesheet` tags before
+/// the script to avoid FOUC. The manifest is cached in
 /// persistent_term after the first read so subsequent requests
 /// don't hit the filesystem.
 ///
-fn prod_tags(entry: String) -> String {
+fn prod_tag_list(entry: String) -> List(Tag) {
   let manifest = case config.get_cached("vite_manifest") {
     Ok(m) -> m
     Error(_) -> {
@@ -168,29 +195,13 @@ fn prod_tags(entry: String) -> String {
   case dict.get(manifest, entry) {
     Ok(chunk) -> {
       let css_tags =
-        chunk.css
-        |> list.map(fn(css_file) {
-          string.concat([
-            "<link rel=\"stylesheet\" href=\"/static/",
-            css_file,
-            "\">",
-          ])
+        list.map(chunk.css, fn(css_file) {
+          Stylesheet(href: "/static/" <> css_file)
         })
-        |> string.join("\n")
 
-      let js_tag =
-        string.concat([
-          "<script type=\"module\" src=\"/static/",
-          chunk.file,
-          "\"></script>",
-        ])
-
-      case css_tags {
-        "" -> js_tag
-        _ -> css_tags <> "\n" <> js_tag
-      }
+      list.append(css_tags, [Script(src: "/static/" <> chunk.file)])
     }
-    Error(_) -> "<!-- vite entry not found: " <> entry <> " -->"
+    Error(_) -> []
   }
 }
 
@@ -224,5 +235,12 @@ fn parse_manifest(content: String) -> Dict(String, ManifestChunk) {
   case json.parse(content, manifest_decoder) {
     Ok(manifest) -> manifest
     Error(_) -> dict.new()
+  }
+}
+
+fn render_tag(tag: Tag) -> String {
+  case tag {
+    Script(src:) -> "<script type=\"module\" src=\"" <> src <> "\"></script>"
+    Stylesheet(href:) -> "<link rel=\"stylesheet\" href=\"" <> href <> "\">"
   }
 }
