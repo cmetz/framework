@@ -1319,3 +1319,40 @@ pub fn dynamic_element_with_attributes_inside_static_parent_test() {
   |> string.contains(":value=")
   |> should.be_false
 }
+
+// ------------------------------------------------------------- Void Element HTML5 Syntax
+
+pub fn void_element_uses_html5_syntax_test() {
+  // Void elements must render as <img> not <img />, since HTML5
+  // does not have self-closing tags (that's XHTML syntax).
+  // Uses a dynamic attribute so the element goes through the
+  // element codepath rather than being treated as static text.
+  let template =
+    "---\nprops(url: String)\n---\n<img :src=\"url\" alt=\"photo\" />"
+
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+  let generated =
+    generator.generate(parsed, "image", True, dict.new(), dict.new())
+
+  // Must NOT contain XHTML self-closing syntax in generated code
+  generated.code
+  |> string.contains(" />")
+  |> should.be_false
+}
+
+pub fn void_element_with_attrs_uses_html5_syntax_test() {
+  // Void elements with attributes must also avoid /> syntax
+  let template =
+    "---\nprops(val: String)\n---\n<input :value=\"val\" class=\"input\" />"
+
+  let assert Ok(tokens) = lexer.tokenize(template)
+  let assert Ok(parsed) = parser.parse(tokens)
+  let generated =
+    generator.generate(parsed, "field", True, dict.new(), dict.new())
+
+  // Must NOT contain XHTML self-closing syntax
+  generated.code
+  |> string.contains(" />")
+  |> should.be_false
+}

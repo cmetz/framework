@@ -1701,7 +1701,7 @@ fn generate_node_concat_items(
                 [StringBatch(["\"<" <> escape_gleam_string(tag) <> "\""])],
                 attrs_items,
                 attributes_items,
-                [StringBatch(["\" />\""])],
+                [StringBatch(["\">\""])],
               ])
             False ->
               list.flatten([
@@ -4104,7 +4104,7 @@ fn generate_element_tree(
       let acc = generate_element_attrs_tree(acc, attributes, handler_lookup)
 
       case is_void_element(tag) {
-        True -> TreeAcc(..acc, current_static: acc.current_static <> " />")
+        True -> TreeAcc(..acc, current_static: acc.current_static <> ">")
         False -> {
           let acc = TreeAcc(..acc, current_static: acc.current_static <> ">")
           let acc =

@@ -70,7 +70,7 @@ fn dev_tags(dev_url: String, entry: String) -> String {
           dev_url,
           "/",
           css_path,
-          "\" />\n",
+          "\">\n",
         ])
       })
       |> string.concat,
@@ -173,7 +173,7 @@ fn prod_tags(entry: String) -> String {
           string.concat([
             "<link rel=\"stylesheet\" href=\"/static/",
             css_file,
-            "\" />",
+            "\">",
           ])
         })
         |> string.join("\n")
