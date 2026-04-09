@@ -177,12 +177,102 @@ pub fn decrement(
 }
 
 /// The bread and butter of caching — try the cache first, and
+/// if it's a miss, run a fallible computation (database query,
+/// API call, etc.). On `Ok(value)` the result gets cached and
+/// returned; on `Error(e)` the error is propagated untouched
+/// and nothing is written to the cache. Errors are never
+/// cached, so transient failures won't poison the TTL.
+///
+pub fn try_remember(
+  pool: CachePool,
+  key: String,
+  ttl_seconds: Int,
+  compute: fn() -> Result(String, e),
+) -> Result(String, e) {
+  do_try_remember(pool, key, compute, fn(value) {
+    put(pool, key, value, ttl_seconds)
+  })
+}
+
+/// Same as try_remember but the cached result never expires.
+/// Good for values that are expensive to compute but rarely
+/// change — like a site's navigation menu built from the
+/// database. The only way to refresh these is an explicit
+/// forget() or flush().
+///
+pub fn try_remember_forever(
+  pool: CachePool,
+  key: String,
+  compute: fn() -> Result(String, e),
+) -> Result(String, e) {
+  do_try_remember(pool, key, compute, fn(value) {
+    put_forever(pool, key, value)
+  })
+}
+
+/// The JSON remember pattern with explicit error propagation.
+/// On a cache hit, returns `Ok(value)`. On a miss, runs the
+/// compute callback; `Ok(value)` is cached and returned, while
+/// `Error(e)` is passed through without touching the cache. The
+/// decoder and encoder operate on the success type `a` because
+/// the error branch is never serialized.
+///
+pub fn try_remember_json(
+  pool: CachePool,
+  key: String,
+  ttl_seconds: Int,
+  decoder: decode.Decoder(a),
+  encoder: fn(a) -> Json,
+  compute: fn() -> Result(a, e),
+) -> Result(a, e) {
+  case get_json(pool, key, decoder) {
+    Ok(value) -> Ok(value)
+    Error(_) ->
+      case compute() {
+        Ok(value) -> {
+          let _ = put_json(pool, key, value, encoder, ttl_seconds)
+          Ok(value)
+        }
+        Error(e) -> Error(e)
+      }
+  }
+}
+
+/// Same as try_remember_json but the cached result never
+/// expires. Good for things like a site's configuration or
+/// navigation tree that are expensive to build from the
+/// database but change so rarely that TTL-based expiry would
+/// just waste computation. The only way to refresh is an
+/// explicit forget() or flush().
+///
+pub fn try_remember_json_forever(
+  pool: CachePool,
+  key: String,
+  decoder: decode.Decoder(a),
+  encoder: fn(a) -> Json,
+  compute: fn() -> Result(a, e),
+) -> Result(a, e) {
+  case get_json(pool, key, decoder) {
+    Ok(value) -> Ok(value)
+    Error(_) ->
+      case compute() {
+        Ok(value) -> {
+          let _ = put_json_forever(pool, key, value, encoder)
+          Ok(value)
+        }
+        Error(e) -> Error(e)
+      }
+  }
+}
+
+/// The bread and butter of caching — try the cache first, and
 /// if it's a miss, run an expensive computation (database
 /// query, API call, etc.) and store the result for next time.
 /// Returns the value directly, no Result to unwrap. If the
 /// cache backend is down, it just calls compute every time —
 /// your app stays working, it's just slower.
 ///
+@deprecated("Use try_remember, which takes a Result-returning compute callback and does not cache errors.")
 pub fn remember(
   pool: CachePool,
   key: String,
@@ -200,6 +290,7 @@ pub fn remember(
 /// only way to refresh these is an explicit forget() or
 /// flush().
 ///
+@deprecated("Use try_remember_forever, which takes a Result-returning compute callback and does not cache errors.")
 pub fn remember_forever(
   pool: CachePool,
   key: String,
@@ -215,6 +306,7 @@ pub fn remember_forever(
 /// value, caches the new format, and life goes on. No need to
 /// manually flush the cache after every deploy.
 ///
+@deprecated("Use try_remember_json, which takes a Result-returning compute callback and does not cache errors.")
 pub fn remember_json(
   pool: CachePool,
   key: String,
@@ -240,6 +332,7 @@ pub fn remember_json(
 /// computation. The only way to refresh is an explicit forget()
 /// or flush().
 ///
+@deprecated("Use try_remember_json_forever, which takes a Result-returning compute callback and does not cache errors.")
 pub fn remember_json_forever(
   pool: CachePool,
   key: String,
@@ -384,5 +477,30 @@ fn do_remember(
       let _ = store(value)
       value
     }
+  }
+}
+
+/// Shared cache-hit/miss logic for try_remember and
+/// try_remember_forever. The only thing the two variants
+/// disagree on is how the computed value is stored, so that
+/// gets passed in as a closure. Keeps the error-propagation
+/// branch in one place.
+///
+fn do_try_remember(
+  pool: CachePool,
+  key: String,
+  compute: fn() -> Result(String, e),
+  store: fn(String) -> Result(Nil, CacheError),
+) -> Result(String, e) {
+  case get(pool, key) {
+    Ok(value) -> Ok(value)
+    Error(_) ->
+      case compute() {
+        Ok(value) -> {
+          let _ = store(value)
+          Ok(value)
+        }
+        Error(e) -> Error(e)
+      }
   }
 }

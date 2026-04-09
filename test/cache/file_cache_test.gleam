@@ -338,25 +338,27 @@ pub fn get_json_invalid_format_test() {
   cleanup_test_pool()
 }
 
-// ------------------------------------------------------------- remember
+// ------------------------------------------------------------- try_remember
 
-pub fn remember_returns_cached_value_test() {
+pub fn try_remember_returns_cached_value_test() {
   let pool = setup_test_pool()
 
   cache.put(pool, "cached", "existing_value", 3600)
   |> should.be_ok()
 
   // Compute function should not be called
-  cache.remember(pool, "cached", 3600, fn() { "computed_value" })
+  cache.try_remember(pool, "cached", 3600, fn() { Ok("computed_value") })
+  |> should.be_ok()
   |> should.equal("existing_value")
 
   cleanup_test_pool()
 }
 
-pub fn remember_computes_when_missing_test() {
+pub fn try_remember_computes_when_missing_test() {
   let pool = setup_test_pool()
 
-  cache.remember(pool, "missing", 3600, fn() { "computed_value" })
+  cache.try_remember(pool, "missing", 3600, fn() { Ok("computed_value") })
+  |> should.be_ok()
   |> should.equal("computed_value")
 
   // Value should now be cached
@@ -367,10 +369,26 @@ pub fn remember_computes_when_missing_test() {
   cleanup_test_pool()
 }
 
-pub fn remember_forever_test() {
+pub fn try_remember_does_not_cache_errors_test() {
   let pool = setup_test_pool()
 
-  cache.remember_forever(pool, "permanent", fn() { "computed" })
+  cache.try_remember(pool, "fails", 3600, fn() { Error(Nil) })
+  |> should.be_error()
+  |> should.equal(Nil)
+
+  // Key should still be missing — errors must not be persisted
+  cache.get(pool, "fails")
+  |> should.be_error()
+  |> should.equal(NotFound)
+
+  cleanup_test_pool()
+}
+
+pub fn try_remember_forever_test() {
+  let pool = setup_test_pool()
+
+  cache.try_remember_forever(pool, "permanent", fn() { Ok("computed") })
+  |> should.be_ok()
   |> should.equal("computed")
 
   cache.get(pool, "permanent")
@@ -380,44 +398,89 @@ pub fn remember_forever_test() {
   cleanup_test_pool()
 }
 
-// ------------------------------------------------------------- remember_json
+// ------------------------------------------------------------- try_remember_json
 
-pub fn remember_json_returns_cached_test() {
+pub fn try_remember_json_returns_cached_test() {
   let pool = setup_test_pool()
   let user = User(name: "Cached", age: 40)
 
   cache.put_json(pool, "user_cached", user, user_encoder, 3600)
   |> should.be_ok()
 
-  cache.remember_json(
+  cache.try_remember_json(
     pool,
     "user_cached",
     3600,
     user_decoder(),
     user_encoder,
-    fn() { User(name: "Computed", age: 99) },
+    fn() { Ok(User(name: "Computed", age: 99)) },
   )
+  |> should.be_ok()
   |> should.equal(user)
 
   cleanup_test_pool()
 }
 
-pub fn remember_json_computes_when_missing_test() {
+pub fn try_remember_json_computes_when_missing_test() {
   let pool = setup_test_pool()
   let user = User(name: "New", age: 20)
 
-  cache.remember_json(
+  cache.try_remember_json(
     pool,
     "new_user",
     3600,
     user_decoder(),
     user_encoder,
-    fn() { user },
+    fn() { Ok(user) },
   )
+  |> should.be_ok()
   |> should.equal(user)
 
   // Should now be cached
   cache.get_json(pool, "new_user", user_decoder())
+  |> should.be_ok()
+  |> should.equal(user)
+
+  cleanup_test_pool()
+}
+
+pub fn try_remember_json_does_not_cache_errors_test() {
+  let pool = setup_test_pool()
+
+  cache.try_remember_json(
+    pool,
+    "failing_user",
+    3600,
+    user_decoder(),
+    user_encoder,
+    fn() { Error(Nil) },
+  )
+  |> should.be_error()
+  |> should.equal(Nil)
+
+  // Cache should still be empty
+  cache.get(pool, "failing_user")
+  |> should.be_error()
+  |> should.equal(NotFound)
+
+  cleanup_test_pool()
+}
+
+pub fn try_remember_json_forever_test() {
+  let pool = setup_test_pool()
+  let user = User(name: "Forever", age: 55)
+
+  cache.try_remember_json_forever(
+    pool,
+    "forever_user",
+    user_decoder(),
+    user_encoder,
+    fn() { Ok(user) },
+  )
+  |> should.be_ok()
+  |> should.equal(user)
+
+  cache.get_json(pool, "forever_user", user_decoder())
   |> should.be_ok()
   |> should.equal(user)
 
