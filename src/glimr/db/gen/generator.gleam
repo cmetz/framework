@@ -887,8 +887,7 @@ fn generate_query_function(
           [
             case list.find(param_types, fn(pt) { pt.0 == n }) {
               Ok(#(_, col_name, col_type)) -> {
-                let wrapper = value_wrapper(col_type)
-                wrapper <> "(" <> col_name <> ")"
+                wrap_param_value(col_name, col_type)
               }
               Error(_) -> "db.string(p" <> int.to_string(n) <> ")"
             },
@@ -1160,8 +1159,7 @@ fn generate_execute_function(
           [
             case list.find(param_types, fn(pt) { pt.0 == n }) {
               Ok(#(_, col_name, col_type)) -> {
-                let wrapper = value_wrapper(col_type)
-                wrapper <> "(" <> col_name <> ")"
+                wrap_param_value(col_name, col_type)
               }
               Error(_) -> "db.string(p" <> int.to_string(n) <> ")"
             },
@@ -1289,6 +1287,24 @@ fn value_wrapper(col_type: ColumnType) -> String {
     schema_parser.Decimal(_, _) -> "db.string"
     schema_parser.Blob -> "db.blob"
     schema_parser.Time -> "db.string"
+  }
+}
+
+/// Produces the full expression for wrapping a parameter value
+/// for the database driver. For most types this is just
+/// `db.string(name)` or `db.int(name)`, but enums need an
+/// intermediate conversion like
+/// `db.string(status_to_string(status))` because the parameter
+/// is a Gleam enum type, not a raw string.
+///
+fn wrap_param_value(col_name: String, col_type: ColumnType) -> String {
+  let wrapper = value_wrapper(col_type)
+  case col_type {
+    schema_parser.Enum(name, _) -> {
+      let converter = snake_case(name) <> "_to_string"
+      wrapper <> "(" <> converter <> "(" <> col_name <> "))"
+    }
+    _ -> wrapper <> "(" <> col_name <> ")"
   }
 }
 

@@ -2,6 +2,7 @@ import gleam/option.{None}
 import gleam/string
 import gleeunit/should
 import glimr/db/gen/generator
+import glimr/db/gen/parser.{ParsedQuery}
 import glimr/db/gen/schema_parser.{Column, Table}
 
 // ------------------------------------------------------------- Array Type Generation
@@ -1301,4 +1302,81 @@ pub fn generate_uuid_auth_customer_model_uses_pk_name_test() {
   result
   |> string.contains("int.to_string")
   |> should.be_false()
+}
+
+// ------------------------------------------------------------- Enum Query Parameters
+
+pub fn generate_insert_converts_enum_to_string_test() {
+  let table =
+    Table(
+      name: "tasks",
+      columns: [
+        Column("id", schema_parser.Id, False, None, None),
+        Column("title", schema_parser.String, False, None, None),
+        Column(
+          "status",
+          schema_parser.Enum("status", ["pending", "done"]),
+          False,
+          None,
+          None,
+        ),
+      ],
+      indexes: [],
+    )
+
+  let queries = [
+    #(
+      "create",
+      "INSERT INTO tasks (title, status) VALUES ($1, $2)",
+      ParsedQuery(
+        tables: ["tasks"],
+        columns: [],
+        params: [1, 2],
+        param_columns: [#(1, "title"), #(2, "status")],
+      ),
+    ),
+  ]
+
+  let result = generator.generate("task", table, queries, "")
+
+  // The enum param must be converted to a string before wrapping
+  // with db.string — i.e. db.string(status_to_string(status)),
+  // not db.string(status)
+  result
+  |> string.contains("db.string(status_to_string(status))")
+  |> should.be_true()
+}
+
+pub fn generate_where_converts_enum_to_string_test() {
+  let table =
+    Table(
+      name: "tasks",
+      columns: [
+        Column("id", schema_parser.Id, False, None, None),
+        Column(
+          "status",
+          schema_parser.Enum("status", ["pending", "done"]),
+          False,
+          None,
+          None,
+        ),
+      ],
+      indexes: [],
+    )
+
+  let queries = [
+    #(
+      "list_by_status",
+      "SELECT * FROM tasks WHERE status = $1",
+      ParsedQuery(tables: ["tasks"], columns: [], params: [1], param_columns: [
+        #(1, "status"),
+      ]),
+    ),
+  ]
+
+  let result = generator.generate("task", table, queries, "")
+
+  result
+  |> string.contains("db.string(status_to_string(status))")
+  |> should.be_true()
 }
