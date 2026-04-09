@@ -882,6 +882,23 @@ pub fn generate_multiple_component_imports_test() {
   |> should.be_true
 }
 
+pub fn generate_no_false_positive_int_import_test() {
+  // A TextNode containing "int.to_string(" as literal content (e.g. a code
+  // example) should not trigger the gleam/int import.
+  let result =
+    generate(
+      template([
+        TextNode("<pre>int.to_string(user_id)</pre>"),
+      ]),
+      "page",
+      False,
+    )
+
+  result.code
+  |> string.contains("import gleam/int")
+  |> should.be_false
+}
+
 // ------------------------------------------------------------- Named Slot Tests
 
 pub fn generate_named_slot_in_component_test() {

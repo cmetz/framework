@@ -1077,22 +1077,26 @@ fn generate_imports(
       }),
     )
 
+  // Strip string literal content so code examples inside TextNodes
+  // don't trigger false-positive imports
+  let code_without_strings = strip_string_literals(generated_code)
+
   let bool_import = case
-    string.contains(generated_code, "bool.to_string(")
+    string.contains(code_without_strings, "bool.to_string(")
     && !set.contains(user_import_set, "gleam/bool")
   {
     True -> ["import gleam/bool"]
     False -> []
   }
   let float_import = case
-    string.contains(generated_code, "float.to_string(")
+    string.contains(code_without_strings, "float.to_string(")
     && !set.contains(user_import_set, "gleam/float")
   {
     True -> ["import gleam/float"]
     False -> []
   }
   let int_import = case
-    string.contains(generated_code, "int.to_string(")
+    string.contains(code_without_strings, "int.to_string(")
     && !set.contains(user_import_set, "gleam/int")
   {
     True -> ["import gleam/int"]
@@ -3128,6 +3132,32 @@ fn component_module_alias(name: String) -> String {
     |> string.replace(":", "_")
     |> string.replace("-", "_")
   "components_" <> safe_name
+}
+
+/// Removes content between double quotes from generated code so
+/// that string literals (e.g. code examples in TextNodes) don't
+/// cause false-positive import detection.
+///
+fn strip_string_literals(code: String) -> String {
+  code
+  |> string.split("\"")
+  |> drop_every_other(True, [])
+  |> string.join("")
+}
+
+fn drop_every_other(
+  parts: List(String),
+  keep: Bool,
+  acc: List(String),
+) -> List(String) {
+  case parts {
+    [] -> list.reverse(acc)
+    [first, ..rest] ->
+      case keep {
+        True -> drop_every_other(rest, False, [first, ..acc])
+        False -> drop_every_other(rest, True, acc)
+      }
+  }
 }
 
 /// Bare strings in :class lists are always-on class names, but
