@@ -12,7 +12,7 @@
 import gleam/dict
 import gleam/list
 import glimr/config/config
-import glimr/http/middleware.{type MiddlewareGroup}
+import glimr/http/kernel.{type MiddlewareGroup}
 import tom
 
 // ------------------------------------------------------------- Public Types
@@ -23,6 +23,7 @@ import tom
 /// becomes the generated module name, and the middleware
 /// controls which kernel pipeline is wired in at compile time.
 ///
+@deprecated("use glimr/router.RouteGroupConfig instead")
 pub type RouteGroupConfig {
   RouteGroupConfig(name: String, prefix: String, middleware: MiddlewareGroup)
 }
@@ -35,6 +36,7 @@ pub type RouteGroupConfig {
 /// list on missing or invalid config lets the compiler fall
 /// back to a single default group — route grouping is optional.
 ///
+@deprecated("use glimr/router.load_group_configs instead")
 pub fn load() -> List(RouteGroupConfig) {
   case config.get_cached("route_groups") {
     Ok(groups) -> groups
@@ -74,9 +76,9 @@ fn parse_group(name: String, toml: tom.Toml) -> RouteGroupConfig {
   let middleware_str = config.toml_get_string(toml, "middleware", "web")
 
   let middleware = case middleware_str {
-    "web" -> middleware.Web
-    "api" -> middleware.Api
-    _ -> middleware.Custom(middleware_str)
+    "web" -> kernel.Web
+    "api" -> kernel.Api
+    _ -> kernel.Custom(middleware_str)
   }
 
   RouteGroupConfig(name: name, prefix: prefix, middleware: middleware)

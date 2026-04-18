@@ -1,8 +1,8 @@
 import gleam/list
 import gleam/string
 import gleeunit/should
-import glimr/routing/annotation_parser.{ParsedRedirect}
-import glimr/routing/compiler
+import glimr/internal/routing/annotation_parser.{ParsedRedirect}
+import glimr/internal/routing/compiler
 
 // Standard imports for test sources
 const standard_imports = "

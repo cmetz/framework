@@ -16,7 +16,7 @@ import gleam/order
 import gleam/regexp
 import gleam/result
 import gleam/string
-import glimr/routing/annotation_parser.{
+import glimr/internal/routing/annotation_parser.{
   type FunctionParam, type ParseResult, type ParsedRoute, ParsedRedirect,
   ParsedRoute,
 }

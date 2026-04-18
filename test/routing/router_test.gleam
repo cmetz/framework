@@ -4,7 +4,7 @@ import gleeunit/should
 import glimr/http/context
 import glimr/http/middleware
 import glimr/http/response
-import glimr/routing/router
+import glimr/router
 import routing/helpers
 import wisp
 

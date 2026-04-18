@@ -12,9 +12,9 @@ import gleam/list
 import gleam/string
 import glimr/console/console
 import glimr/filesystem/filesystem
-import glimr/routing/annotation_parser
-import glimr/routing/compiler
-import glimr/routing/route_group.{type RouteGroupConfig}
+import glimr/internal/routing/annotation_parser
+import glimr/internal/routing/compiler
+import glimr/router.{type RouteGroupConfig}
 import simplifile
 
 // ------------------------------------------------------------- Public Functions
@@ -38,7 +38,7 @@ pub fn run(verbose: Bool) -> Result(Nil, String) {
   // controllers don't leave stale imports behind.
   clean_compiled_routes(routes_dir)
 
-  let groups = route_group.load()
+  let groups = router.load_group_configs()
   let controller_files = discover_controller_files("src")
   let result = compile_controllers(controller_files, verbose, groups)
 
