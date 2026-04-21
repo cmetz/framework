@@ -50,18 +50,6 @@ pub fn call_handle_json(
   ])
 }
 
-/// After handle_json updates the props, the actor needs fresh
-/// HTML to send as a patch. Calling render_json dynamically
-/// lets the runtime re-render any template module without
-/// compile-time coupling to it.
-///
-pub fn call_render_json(
-  module: String,
-  props_json: String,
-) -> Result(String, String) {
-  call_module_fn(module, "render_json", [dynamic.string(props_json)])
-}
-
 /// After handle_json updates the props, the actor needs a fresh
 /// tree JSON to diff against the previous tree. Calling
 /// render_tree_json dynamically produces the statics/dynamics

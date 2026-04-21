@@ -428,7 +428,6 @@ fn generate_module(
       generate_live_functions(
         template,
         module_name,
-        is_component,
         component_data,
         component_slots,
         handlers,
@@ -452,7 +451,6 @@ fn generate_module(
 fn generate_live_functions(
   template: Template,
   module_name: String,
-  is_component: Bool,
   component_data: ComponentDataMap,
   component_slots: ComponentSlotMap,
   handlers: List(#(String, handler_parser.Handler)),
@@ -489,7 +487,6 @@ fn generate_live_functions(
 
   // Generate JSON wrapper functions for dynamic dispatch
   let handle_json_fn = generate_handle_json_function(template, used_vars)
-  let render_json_fn = generate_render_json_function(template, is_component)
 
   // Generate tree functions for statics/dynamics
   let tree_fn =
@@ -500,6 +497,7 @@ fn generate_live_functions(
       component_slots,
       handler_lookup,
     )
+
   let tree_json_fn = generate_tree_json_function(template)
 
   "/// Returns True if this is a live template.\n"
@@ -528,8 +526,6 @@ fn generate_live_functions(
   <> handle_fn
   <> "\n"
   <> handle_json_fn
-  <> "\n"
-  <> render_json_fn
   <> "\n"
   <> tree_fn
   <> "\n"
@@ -793,45 +789,6 @@ fn generate_handle_json_function(
   <> "}\n"
 }
 
-/// After handling an event, the runtime needs to re-render the
-/// template with updated props. Like handle_json, this wrapper
-/// bridges the gap between dynamic dispatch (JSON strings) and
-/// the typed render function so the runtime can trigger
-/// re-renders without knowing prop types.
-///
-fn generate_render_json_function(
-  template: Template,
-  is_component: Bool,
-) -> String {
-  // Generate the props decoder (same as handle_json)
-  let props_decoder = generate_props_decoder(template.props)
-
-  // Generate the call to render() with extracted props
-  let render_call = generate_render_call(template.props, is_component)
-
-  "/// JSON wrapper for render() - used by live_socket for dynamic dispatch.\n"
-  <> "/// Parses props from JSON, calls render(), returns HTML string.\n"
-  <> "///\n"
-  <> "pub fn render_json(props_json: String) -> String {\n"
-  <> "  // Decode props from JSON\n"
-  <> "  let decoder = {\n"
-  <> props_decoder
-  <> "  }\n"
-  <> "\n"
-  <> "  case json.parse(props_json, decoder) {\n"
-  <> "    Ok("
-  <> case template.props {
-    [] -> "_"
-    _ -> "props"
-  }
-  <> ") -> "
-  <> render_call
-  <> "\n"
-  <> "    Error(_) -> \"<!-- JSON parse error -->\"  // Error fallback\n"
-  <> "  }\n"
-  <> "}\n"
-}
-
 /// JSON wrapper functions receive props as a JSON string that
 /// must be decoded into typed Gleam values before calling
 /// handle() or render(). Generating a decoder per template
@@ -908,45 +865,6 @@ fn generate_handle_call(
       <> " = props\n        handle(handler_id, "
       <> args
       <> special_args_str
-      <> ") }"
-    }
-  }
-}
-
-/// Similar to generate_handle_call but for render(). The
-/// decoded props tuple must be destructured into named
-/// arguments matching the render function's signature so the
-/// JSON wrapper can call render() correctly.
-///
-fn generate_render_call(
-  props: List(#(String, String)),
-  is_component: Bool,
-) -> String {
-  let attrs_arg = case is_component {
-    True -> ", attributes: []"
-    False -> ""
-  }
-
-  case props {
-    [] ->
-      "render("
-      <> case is_component {
-        True -> "attributes: []"
-        False -> ""
-      }
-      <> ")"
-    [single] -> "render(" <> single.0 <> ": props" <> attrs_arg <> ")"
-    _ -> {
-      // Destructure the tuple and pass as named args
-      let pattern =
-        "#(" <> string.join(list.map(props, fn(p) { p.0 }), ", ") <> ")"
-      let args =
-        string.join(list.map(props, fn(p) { p.0 <> ": " <> p.0 }), ", ")
-      "{ let "
-      <> pattern
-      <> " = props\n      render("
-      <> args
-      <> attrs_arg
       <> ") }"
     }
   }
@@ -3136,8 +3054,8 @@ fn component_module_alias(name: String) -> String {
 
 /// Removes content between double quotes from generated code so
 /// that string literals (e.g. code examples in TextNodes) don't
-/// cause false-positive import detection. Handles escaped quotes
-/// (backslash-double-quote) inside string literals.
+/// cause false-positive import detection. Handles escaped
+/// quotes (backslash-double-quote) inside string literals.
 ///
 fn strip_string_literals(code: String) -> String {
   do_strip_string_literals(code, False, "")
@@ -3577,8 +3495,9 @@ fn generate_tree_json_function(template: Template) -> String {
   <> "}\n"
 }
 
-/// Generate the call expression for render_tree, matching the
-/// pattern used by generate_render_call.
+/// Generate the call expression for render_tree. Decoded props
+/// are destructured into named arguments matching the function
+/// signature.
 ///
 fn generate_render_tree_call(props: List(#(String, String))) -> String {
   case props {
