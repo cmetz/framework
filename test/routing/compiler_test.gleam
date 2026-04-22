@@ -124,7 +124,7 @@ pub fn show(_ctx: Context(App)) {
   |> should.be_true
 
   result.routes_code
-  |> string.contains("redirect.to(\"/new\")")
+  |> string.contains("response.redirect(\"/new\")")
   |> should.be_true
 }
 
@@ -147,7 +147,7 @@ pub fn show(_ctx: Context(App)) {
   |> should.be_true
 
   result.routes_code
-  |> string.contains("redirect.permanent(\"/new-path\")")
+  |> string.contains("response.redirect_permanent(\"/new-path\")")
   |> should.be_true
 }
 

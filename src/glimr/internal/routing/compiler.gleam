@@ -133,14 +133,6 @@ pub fn write_compiled_file(
     False -> ""
   }
 
-  let redirect_import = case
-    string.contains(compile_result.routes_code, "redirect.to(")
-    || string.contains(compile_result.routes_code, "redirect.permanent(")
-  {
-    True -> "\nimport glimr/response/redirect"
-    False -> ""
-  }
-
   // Middleware needs ctx even if handlers don't use it directly
   let needs_ctx = compile_result.uses_ctx || compile_result.uses_middleware
   let ctx_arg = case needs_ctx {
@@ -170,7 +162,6 @@ pub fn write_compiled_file(
     <> imports_str
     <> http_import
     <> middleware_import
-    <> redirect_import
     <> "\nimport glimr/http/response"
     <> "\n\npub fn routes("
     <> fn_args
@@ -830,8 +821,8 @@ fn generate_method_cases(
   case first {
     Ok(ParsedRedirect(to:, status:, ..)) -> {
       let redirect_fn = case status {
-        308 -> "redirect.permanent"
-        _ -> "redirect.to"
+        308 -> "response.redirect_permanent"
+        _ -> "response.redirect"
       }
       "      " <> redirect_fn <> "(\"" <> to <> "\")"
     }
