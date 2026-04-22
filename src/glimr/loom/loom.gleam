@@ -31,13 +31,6 @@ pub const views_path = response.views_path
 ///
 pub const output_path = "src/compiled/loom/"
 
-/// Template authors can place Gleam modules alongside their
-/// templates (e.g., for live event handlers). The file watcher
-/// monitors this path to trigger recompilation when backing
-/// Gleam code changes.
-///
-pub const app_path = "src/app/loom/"
-
 // ------------------------------------------------------------- Public Types
 
 /// The WebSocket runtime receives events as JSON from the
@@ -107,16 +100,6 @@ pub type SocketMessage {
 ///
 pub fn is_views_path(path: String) -> Bool {
   string.starts_with(path, views_path)
-}
-
-/// Changes to backing Gleam files (event handlers, helpers)
-/// require recompiling the corresponding template so the
-/// generated code stays in sync. This guard identifies relevant
-/// Gleam file changes without reacting to unrelated source
-/// modifications.
-///
-pub fn is_app_path(path: String) -> Bool {
-  string.starts_with(path, app_path)
 }
 
 /// The compiler needs a complete list of template files to

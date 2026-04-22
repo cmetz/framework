@@ -34,17 +34,10 @@ fn run(args: Args) -> Nil {
   let result = case path {
     "" -> compile_loom.run(verbose)
     _ -> {
-      let error_message = {
-        "Not a loom file: path must be in "
-        <> loom.views_path
-        <> " or "
-        <> loom.app_path
-        <> "."
-      }
-
-      case loom.is_views_path(path) || loom.is_app_path(path) {
+      case loom.is_views_path(path) {
         True -> compile_loom.run_path(path, verbose)
-        False -> Error(error_message)
+        False ->
+          Error("Not a loom file: path must be in " <> loom.views_path <> ".")
       }
     }
   }

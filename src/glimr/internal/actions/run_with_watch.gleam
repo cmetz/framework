@@ -82,10 +82,7 @@ fn watch_loop(
         })
 
       let loom_source_changed =
-        list.any(files, fn(f) {
-          string.ends_with(f, ".loom.html")
-          || string.contains(f, "src/app/loom/")
-        })
+        list.any(files, fn(f) { string.ends_with(f, ".loom.html") })
 
       let command_changed =
         list.any(files, fn(f) {
@@ -147,10 +144,7 @@ fn watch_loop(
           case config.get_bool("glimr.loom.auto_compile") {
             True -> {
               let loom_files =
-                list.filter(files, fn(f) {
-                  string.ends_with(f, ".loom.html")
-                  || string.contains(f, "src/app/loom/")
-                })
+                list.filter(files, fn(f) { string.ends_with(f, ".loom.html") })
 
               io.println("")
               io.println(console.warning("Loom changes detected:"))

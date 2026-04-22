@@ -40,7 +40,7 @@ pub type CacheError {
   /// The cached value couldn't be encoded or decoded — often
   /// means the data shape changed between deployments
   SerializationError(message: String)
-  /// The backend is unreachable or returned an unexpected error —
+  /// The backend is unreachable or returned an unexpected error
   /// usually a network or permissions issue
   ConnectionError(message: String)
   /// The entry existed but has expired — used internally by
